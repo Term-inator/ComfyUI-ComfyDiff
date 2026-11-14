@@ -74,7 +74,11 @@
 .cd-details { padding: 3px 7px; }
 .cd-details summary { cursor: pointer; }
 .cd-details ul { margin: 5px 0; padding-inline-start: 18px; }
-[data-comfydiff-mark="added"] { outline: 2px solid var(--cd-green) !important; outline-offset: 3px; }
+[data-comfydiff-mark="added"] {
+  outline: 4px solid var(--cd-green) !important;
+  outline-offset: 4px;
+  box-shadow: 0 0 0 9px color-mix(in srgb, var(--cd-green) 30%, transparent);
+}
 [data-comfydiff-mark="added"]::after {
   content: "+";
   position: absolute;
@@ -87,8 +91,12 @@
   background: var(--cd-surface);
   pointer-events: none;
 }
-[data-comfydiff-mark="changed"] { outline: 2px solid var(--cd-yellow) !important; outline-offset: 2px; }
-[data-comfydiff-mark="port"] { outline: 2px solid var(--cd-yellow) !important; border-radius: 100%; }
+[data-comfydiff-mark="changed"], [data-comfydiff-mark="port"] {
+  outline: 3px solid var(--cd-yellow) !important;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px color-mix(in srgb, var(--cd-yellow) 30%, transparent);
+}
+[data-comfydiff-mark="port"] { border-radius: 100%; }
 
 .comfydiff-form, .comfydiff-readonly {
   margin: auto;
@@ -154,7 +162,7 @@
 .cd-ghost-node {
   position: absolute;
   box-sizing: border-box;
-  border: 1px dashed var(--cd-red);
+  border: 2px dashed var(--cd-red);
   border-radius: 10px;
   background: color-mix(in srgb, var(--cd-red) 14%, var(--cd-surface) 80%);
   color: var(--cd-text);

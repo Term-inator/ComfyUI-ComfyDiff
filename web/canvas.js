@@ -86,13 +86,13 @@ function liveReroutes(graph, link) {
 }
 
 function drawRemovedEdge(context, edge, endpoint, scale) {
-  context.setLineDash([7 / scale, 5 / scale]);
-  context.globalAlpha = 0.7;
+  context.setLineDash([9 / scale, 6 / scale]);
+  context.globalAlpha = 0.95;
   const points = traceEdge(context, edge, endpoint);
   context.setLineDash([]);
   for (const [x, y] of [points[0], points.at(-1)]) {
     context.beginPath();
-    context.arc(x, y, 4 / scale, 0, Math.PI * 2);
+    context.arc(x, y, 5 / scale, 0, Math.PI * 2);
     context.stroke();
   }
 }
@@ -131,7 +131,10 @@ function center(canvas, rect, sidebar) {
   const covered = panelRect && panelRect.left <= canvasRect.left + 60
     ? Math.max(0, Math.min(panelRect.right - canvasRect.left, canvasRect.width * 0.7)) : 0;
   const viewport = [covered, 0, Math.max(1, canvasRect.width - covered), canvasRect.height];
-  canvas.ds.fitToBounds(rect, { viewport });
+  const [x, y, width, height] = rect;
+  const padded = [x - 36, y - 36, width + 72, height + 72];
+  const fitScale = Math.min(viewport[2] / Math.max(padded[2], 300), viewport[3] / Math.max(padded[3], 300));
+  canvas.ds.fitToBounds(padded, { viewport, zoom: Math.min(0.85, 0.9 / fitScale) });
   canvas.setDirty(true, true);
 }
 
@@ -285,8 +288,8 @@ export class CanvasReview {
       context.save();
       context.lineCap = "round";
       context.strokeStyle = green;
-      context.lineWidth = canvas.connections_width + 5 / scale;
-      context.globalAlpha = 0.7;
+      context.lineWidth = canvas.connections_width + 11 / scale;
+      context.globalAlpha = 0.96;
       if (liveLink && canvas.renderedPaths.has(liveLink)) {
         for (const segment of [liveLink, ...liveReroutes(graph, liveLink)]) {
           if (!segment.path || !canvas.renderedPaths.has(segment)) continue;
@@ -300,7 +303,7 @@ export class CanvasReview {
         }
       }
       context.strokeStyle = red;
-      context.lineWidth = 2 / scale;
+      context.lineWidth = 3 / scale;
       for (const edge of removedEdges) drawRemovedEdge(context, edge, endpoint, scale);
       if (livePort || boundaryPort || oldBoundaryPort) {
         const point = boundaryPort ? endpoint(node, boundaryPort, change.side === "inputs") :
@@ -310,7 +313,7 @@ export class CanvasReview {
         context.strokeStyle = oldBoundaryPort ? red : yellow;
         context.setLineDash(oldBoundaryPort ? [4 / scale, 3 / scale] : []);
         context.beginPath();
-        context.arc(...point, 8 / scale, 0, Math.PI * 2);
+        context.arc(...point, 10 / scale, 0, Math.PI * 2);
         context.stroke();
       }
       context.restore();

@@ -11,11 +11,13 @@ const nodeIdentity = new NodeIdentity();
 const pathLabel = (path) => ["主图", ...path.map((step) => `${step.name} #${step.id}`)].join(" › ");
 const errorText = (error) => error instanceof Error ? error.message : String(error);
 const modeNames = new Map([[0, "始终"], [1, "事件时"], [2, "停用"], [3, "触发时"], [4, "旁路"]]);
+const ALL_GRAPHS = "*";
 const changeCategories = [
-  ["节点", new Set(["added", "deleted", "replaced"])],
-  ["接线与来源", new Set(["input"])],
-  ["参数与模式", new Set(["parameter", "mode"])],
-  ["子图端口", new Set(["boundary"])],
+  { id: "all", label: "全部" },
+  { id: "nodes", label: "节点", kinds: ["added", "deleted", "replaced"] },
+  { id: "links", label: "接线", title: "接线与来源", kinds: ["input"] },
+  { id: "fields", label: "参数", title: "参数与模式", kinds: ["parameter", "mode"] },
+  { id: "ports", label: "端口", title: "子图端口", kinds: ["boundary"] },
 ];
 
 async function request(operation, params = {}, body) {
@@ -79,6 +81,12 @@ function sourceText(source, missing = "未连接") {
   return display(source.value);
 }
 
+function preview(value) {
+  const text = String(value);
+  const [first] = text.split("\n", 1);
+  return first.length <= 54 && first === text ? first : `${first.slice(0, 54)}…`;
+}
+
 function description(change, result) {
   const { kind, from, to, before, after } = change;
   const node = nodeLabel(after ?? before, after ? result.after : result.before);
@@ -86,13 +94,24 @@ function description(change, result) {
   if (kind === "deleted") return { label: "− 删除节点", color: "red", node };
   if (kind === "replaced") return { label: "替换", node, a: before.type, b: after.type };
   if (kind === "mode") return { label: "运行模式", node, a: modeNames.get(from) ?? from, b: modeNames.get(to) ?? to };
-  if (kind === "boundary") return {
-    label: "子图端口", node,
-    a: from ? `${from.label || from.name} · ${display(from.type)}` : "无",
-    b: to ? `${to.label || to.name} · ${display(to.type)}` : "无",
-  };
-  const label = kind === "parameter" ? "参数" :
-    from?.kind === "value" || to?.kind === "value" ? "来源变化" : "接线";
+  if (kind === "boundary") {
+    const port = to ?? from;
+    return {
+      label: !from ? "新增端口" : !to ? "移除端口" : "端口变更",
+      color: !from ? "green" : !to ? "red" : undefined,
+      node: `${node} · ${port.label || port.name}`,
+      a: from ? `${from.label || from.name} · ${display(from.type)}` : "无",
+      b: to ? `${to.label || to.name} · ${display(to.type)}` : "无",
+    };
+  }
+  let label = "参数";
+  if (kind === "input") {
+    if (from?.kind === "value" || to?.kind === "value") label = "来源变化";
+    else if (from?.kind !== "link" && to?.kind === "link") label = "新增接线";
+    else if (from?.kind === "link" && to?.kind !== "link") label = "移除接线";
+    else if (from?.kind === "link" && to?.kind === "link") label = "改接线";
+    else label = "端口来源";
+  }
   const missing = kind === "parameter" ? "无" : "未连接";
   return { label, node: `${node} · ${change.field}`, a: sourceText(from, missing), b: sourceText(to, missing) };
 }
@@ -100,8 +119,8 @@ function description(change, result) {
 function deletedDetails(change, result, canOpen, onOpen) {
   const graph = result.before.graphs.get(change.graph);
   const node = change.before;
-  const details = element("details", "cd-details");
-  details.append(element("summary", "", "旧节点详情"));
+  const details = element("div", "cd-details");
+  details.append(element("strong", "", "旧节点详情"));
   const body = element("ul");
   body.append(element("li", "", `运行模式 ${modeNames.get(node.mode) ?? node.mode}`));
   let index = 0;
@@ -127,7 +146,8 @@ class Sidebar {
     this.sequence = 0;
     this.reading = false;
     this.nextRead = 0;
-    this.collapsedCategories = new Set();
+    this.category = "all";
+    this.scope = ALL_GRAPHS;
 
     const heading = element("header", "cd-header");
     heading.append(element("h2", "", "工作流差异"), button("设置", () => this.settings()));
@@ -148,8 +168,43 @@ class Sidebar {
     this.status.setAttribute("role", "status");
     this.reloadButton = button("在当前标签页载入磁盘版本", () => this.safe(() => this.reloadDisk()));
     this.reloadButton.hidden = true;
-    this.items = element("div", "cd-items");
-    root.replaceChildren(heading, paths, sources, actions, this.provenance, this.status, this.reloadButton, this.items);
+    const controls = element("div", "cd-review-header");
+    controls.append(heading, paths, this.provenance, sources, actions);
+    this.results = element("section", "cd-results");
+    this.results.hidden = true;
+    this.scopeField = element("label", "cd-scope");
+    this.scopeField.append(element("span", "", "图层范围"));
+    this.scopePicker = element("select");
+    this.scopePicker.onchange = () => {
+      this.scope = this.scopePicker.value;
+      this.clearSelection();
+      this.renderResults();
+    };
+    this.scopeField.append(this.scopePicker);
+    this.tabList = element("div", "cd-tabs");
+    this.tabList.setAttribute("role", "tablist");
+    this.tabList.setAttribute("aria-label", "差异类型");
+    this.tabList.onkeydown = (event) => this.handleTabKey(event);
+    const filters = element("div", "cd-filters");
+    filters.append(this.scopeField, this.tabList);
+    this.results.append(filters);
+    this.tabs = changeCategories.map((category) => {
+      const control = button("", () => this.activateCategory(category.id), "cd-tab");
+      const count = element("span", "cd-tab-count");
+      const panel = element("div", "cd-items");
+      control.id = `cd-category-${category.id}`;
+      control.title = category.title ?? category.label;
+      control.setAttribute("role", "tab");
+      panel.id = `cd-panel-${category.id}`;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", control.id);
+      control.setAttribute("aria-controls", panel.id);
+      control.append(element("span", "", category.label), count);
+      this.tabList.append(control);
+      this.results.append(panel);
+      return { ...category, control, count, panel };
+    });
+    root.replaceChildren(controls, this.status, this.reloadButton, this.results);
     this.render();
   }
 
@@ -194,15 +249,37 @@ class Sidebar {
     this.status.classList.toggle("cd-error", error);
   }
 
+  showChangeCount() {
+    const count = this.result.changes.length;
+    this.message(count ? `${count} 处差异` : "没有节点、参数或接线差异。");
+  }
+
   reset() {
     this.sequence++;
-    this.canvas.clear();
+    this.clearSelection();
     this.result = null;
-    this.selected = null;
-    this.providerLabels = [];
-    this.reloadButton.hidden = true;
-    this.items.replaceChildren();
+    this.clearResults();
     this.provenance.textContent = "";
+  }
+
+  clearResults() {
+    this.providerLabels = [];
+    this.results.hidden = true;
+    for (const tab of this.tabs) tab.panel.replaceChildren();
+  }
+
+  clearSelection() {
+    this.click = null;
+    this.canvas.clear();
+    if (this.selected) {
+      const { control, details } = this.selected;
+      control.setAttribute("aria-expanded", "false");
+      details.replaceChildren();
+      details.hidden = true;
+    }
+    this.selected = null;
+    this.reloadButton.hidden = true;
+    if (this.result) this.showChangeCount();
   }
 
   tick() {
@@ -253,9 +330,9 @@ class Sidebar {
       const config = await request("settings", { native: workflow?.isTemporary ? null : workflow?.path });
       if (!stillCurrent()) return;
       if (config.workspace !== this.config.workspace || config.file !== this.config.file) {
-        this.canvas.clear();
+        this.clearSelection();
         this.result = null;
-        this.items.replaceChildren();
+        this.clearResults();
       }
       this.config = config;
       if (!config.workspace) {
@@ -279,11 +356,16 @@ class Sidebar {
       const before = snapshot(data.before === null ? null : parseWorkflow(data.before, "HEAD"));
       const after = currentCanvas ?? snapshot(parseWorkflow(data.after, "工作区"));
       const changes = compare(before, after, (graph, node) => namesOnCanvas(app, graph, node));
-      this.canvas.clear();
-      this.reloadButton.hidden = true;
+      this.clearSelection();
+      const filterContext = [api.user, workflow.instanceId, config.workspace, file];
+      if (!equal(this.filterContext, filterContext)) {
+        this.scope = ALL_GRAPHS;
+        this.category = "all";
+        this.filterContext = filterContext;
+      }
       this.result = { ...data, before, after, changes };
-      this.selected = null;
-      this.message(changes.length ? `${changes.length} 处差异` : "没有节点、参数或接线差异。");
+      this.showChangeCount();
+      this.renderScopes();
       this.renderResults();
       const result = this.result;
       if (nodeIdentity.needsIndex(changes)) {
@@ -293,10 +375,9 @@ class Sidebar {
       }
     } catch (error) {
       if (!stillCurrent()) return;
-      this.canvas.clear();
+      this.clearSelection();
       this.result = null;
-      this.reloadButton.hidden = true;
-      this.items.replaceChildren();
+      this.clearResults();
       this.message(errorText(error), true);
     } finally {
       if (this.readId === requestId) {
@@ -386,12 +467,76 @@ class Sidebar {
     await this.refresh();
   }
 
+  renderScopes() {
+    const { before, after, changes } = this.result;
+    const graphs = new Map([[ALL_GRAPHS, "全部图层"], [ROOT, "主图"]]);
+    for (const { graph } of changes) {
+      if (!graphs.has(graph)) graphs.set(graph, pathLabel(after.paths.get(graph) ?? before.paths.get(graph) ?? []));
+    }
+    if (!graphs.has(this.scope)) this.scope = ALL_GRAPHS;
+    this.scopePicker.replaceChildren();
+    for (const [value, label] of graphs) {
+      const option = element("option", "", label);
+      option.value = value;
+      this.scopePicker.append(option);
+    }
+    this.scopePicker.value = this.scope;
+    this.scopeField.hidden = graphs.size === 2 && this.scope === ALL_GRAPHS;
+  }
+
+  activateCategory(category, focus = false) {
+    if (!this.result) return;
+    if (this.category !== category) {
+      this.category = category;
+      this.clearSelection();
+      this.renderResults();
+    }
+    if (focus) this.tabs.find((tab) => tab.id === this.category).control.focus();
+  }
+
+  handleTabKey(event) {
+    const index = this.tabs.findIndex((tab) => tab.control === event.target);
+    if (index < 0 || event.altKey || event.ctrlKey || event.metaKey) return;
+    const last = this.tabs.length - 1;
+    let next;
+    if (event.key === "ArrowLeft") next = index === 0 ? last : index - 1;
+    if (event.key === "ArrowRight") next = index === last ? 0 : index + 1;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = last;
+    if (next === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.activateCategory(this.tabs[next].id, true);
+  }
+
   renderResults() {
     const result = this.result;
+    const scoped = result.changes.filter((change) => this.scope === ALL_GRAPHS || change.graph === this.scope);
     const groups = new Map();
     this.providerLabels = [];
-    this.items.replaceChildren();
-    for (const change of result.changes) {
+    this.results.hidden = !result.changes.length;
+    let panel;
+    let entries;
+    for (const tab of this.tabs) {
+      const matches = tab.kinds ? scoped.filter((change) => tab.kinds.includes(change.kind)) : scoped;
+      const active = tab.id === this.category;
+      tab.count.textContent = ` ${matches.length}`;
+      tab.control.setAttribute("aria-selected", String(active));
+      tab.control.tabIndex = active ? 0 : -1;
+      tab.panel.hidden = !active;
+      tab.panel.replaceChildren();
+      if (active) {
+        panel = tab.panel;
+        entries = matches;
+      }
+    }
+    if (!entries.length) {
+      panel.tabIndex = 0;
+      panel.append(element("p", "cd-empty", "此范围没有这类差异。"));
+      return;
+    }
+    panel.removeAttribute("tabindex");
+    for (const change of entries) {
       if (!groups.has(change.graph)) groups.set(change.graph, []);
       groups.get(change.graph).push(change);
     }
@@ -399,24 +544,8 @@ class Sidebar {
       const group = element("section", "cd-group");
       const path = result.after.paths.get(graph) ?? result.before.paths.get(graph) ?? [];
       group.append(element("h3", "", pathLabel(path)));
-      for (const [label, kinds] of changeCategories) {
-        const entries = changes.filter((change) => kinds.has(change.kind));
-        if (!entries.length) continue;
-        const category = element("details", "cd-category");
-        const key = JSON.stringify([this.config.workspace, this.file, graph, label]);
-        category.open = !this.collapsedCategories.has(key);
-        category.ontoggle = () => {
-          if (category.open) this.collapsedCategories.delete(key);
-          else this.collapsedCategories.add(key);
-        };
-        const summary = element("summary", "", label);
-        summary.append(element("span", "cd-category-count", String(entries.length)));
-        const list = element("div", "cd-category-entries");
-        for (const change of entries) list.append(this.renderChange(change, result));
-        category.append(summary, list);
-        group.append(category);
-      }
-      this.items.append(group);
+      for (const change of changes) group.append(this.renderChange(change, result));
+      panel.append(group);
     }
     this.updateProviders();
   }
@@ -433,40 +562,71 @@ class Sidebar {
   renderChange(change, result) {
     const row = description(change, result);
     const container = element("div", "cd-entry");
-    const select = button("", () => this.locate(change, result, select), "cd-change");
-    select.setAttribute("aria-pressed", "false");
-    select.append(element("span", `cd-kind ${row.color ? `cd-${row.color}` : ""}`, row.label));
-    select.append(element("strong", "", row.node));
+    const details = element("div", "cd-change-details");
+    details.id = `cd-change-details-${this.providerLabels.length}`;
+    details.hidden = true;
+    const select = button("", () => {
+      if (this.selected?.control === select) {
+        this.clearSelection();
+        return;
+      }
+      this.clearSelection();
+      this.selected = { control: select, details };
+      select.setAttribute("aria-expanded", "true");
+      details.append(this.renderDetails(change, result, row));
+      details.hidden = false;
+      this.locate(change, result);
+    }, "cd-change");
+    select.setAttribute("aria-expanded", "false");
+    select.setAttribute("aria-controls", details.id);
+    const icon = element("span", `cd-change-symbol cd-${row.color ?? "yellow"}`,
+      row.color === "green" ? "+" : row.color === "red" ? "−" : "↔");
+    icon.setAttribute("aria-hidden", "true");
+    select.append(icon, element("strong", "", row.node));
+    const summary = change.kind === "mode" || change.kind === "parameter"
+      ? `${row.label} · ${preview(row.a)} → ${preview(row.b)}` : row.label;
+    select.append(element("span", "cd-kind", summary));
     const label = element("span", "cd-node-provider");
     this.providerLabels.push({ node: change.after ?? change.before, label });
     select.append(label);
-    if (row.a !== undefined || row.b !== undefined) {
-      select.append(element("span", "cd-old", `− ${row.a}`), element("span", "cd-new", `＋ ${row.b}`));
-    }
-    container.append(select);
-    if (change.kind === "deleted") {
-      const canOpen = result.before.graphs.has(change.before.type) ||
-        (change.graph !== ROOT && !result.after.paths.has(change.graph));
-      container.append(deletedDetails(change, result, canOpen, () => this.locate(change, result, select, true)));
-    }
+    container.append(select, details);
     return container;
   }
 
-  async locate(change, result, control, openOld) {
+  renderDetails(change, result, row) {
+    const content = document.createDocumentFragment();
+    if (row.a !== undefined || row.b !== undefined) {
+      const delta = element("dl", "cd-delta");
+      for (const [label, value, color] of [["− 旧", row.a, "old"], ["＋ 新", row.b, "new"]]) {
+        if (value === undefined) continue;
+        const pair = element("div", `cd-${color}`);
+        pair.append(element("dt", "", label), element("dd", "", value));
+        delta.append(pair);
+      }
+      content.append(delta);
+    } else if (change.kind === "added") {
+      const { inputs, outputs } = change.after;
+      content.append(element("p", "cd-node-summary", `${inputs.length} 个输入 · ${outputs.length} 个输出`));
+    }
+    if (change.kind === "deleted") {
+      const canOpen = result.before.graphs.has(change.before.type) ||
+        (change.graph !== ROOT && !result.after.paths.has(change.graph));
+      content.append(deletedDetails(change, result, canOpen, () => this.locate(change, result, true)));
+    }
+    return content;
+  }
+
+  async locate(change, result, openOld) {
     if (this.result !== result || !this.visible) return;
     const context = this.currentContext();
     const click = Symbol();
     this.click = click;
-    this.selected?.setAttribute("aria-pressed", "false");
-    this.selected = null;
     this.reloadButton.hidden = true;
     try {
       const focused = await this.canvas.locate(change, result, openOld);
       if (this.click !== click || !this.current(context) || this.result !== result) return;
       if (!focused) return;
-      control.setAttribute("aria-pressed", "true");
-      this.selected = control;
-      this.message(`${result.changes.length} 处差异`);
+      this.showChangeCount();
     } catch (error) {
       if (this.click !== click || !this.current(context) || this.result !== result) return;
       this.message(errorText(error), true);

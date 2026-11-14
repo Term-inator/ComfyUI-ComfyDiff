@@ -67,6 +67,16 @@
 .cd-old, .cd-new { white-space: pre-wrap; }
 .cd-items, .cd-group { display: grid; gap: 6px; min-width: 0; }
 .cd-group h3 { padding: 5px 0; font-size: 0.86em; color: var(--cd-muted); }
+.cd-category > summary {
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--cd-text) 8%, var(--cd-surface));
+  cursor: pointer;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+.cd-category-count { float: right; color: var(--cd-muted); font-variant-numeric: tabular-nums; }
+.cd-category-entries { display: grid; gap: 6px; margin-top: 5px; }
 .comfydiff .cd-change { display: grid; gap: 2px; width: 100%; padding: 7px 8px; text-align: left; }
 .cd-kind { font-size: 0.78em; }
 .cd-change strong { font-size: 0.94em; font-weight: 600; }

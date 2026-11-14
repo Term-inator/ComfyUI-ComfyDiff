@@ -10,6 +10,12 @@ const nodeModules = new Map();
 const pathLabel = (path) => ["主图", ...path.map((step) => `${step.name} #${step.id}`)].join(" › ");
 const errorText = (error) => error instanceof Error ? error.message : String(error);
 const modeNames = new Map([[0, "始终"], [1, "事件时"], [2, "停用"], [3, "触发时"], [4, "旁路"]]);
+const changeCategories = [
+  ["节点", new Set(["added", "deleted", "replaced"])],
+  ["接线与来源", new Set(["input"])],
+  ["参数与模式", new Set(["parameter", "mode"])],
+  ["子图端口", new Set(["boundary"])],
+];
 
 async function request(operation, params = {}, body) {
   const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value != null));
@@ -120,6 +126,7 @@ class Sidebar {
     this.sequence = 0;
     this.reading = false;
     this.nextRead = 0;
+    this.collapsedCategories = new Set();
 
     const heading = element("header", "cd-header");
     heading.append(element("h2", "", "工作流差异"), button("设置", () => this.settings()));
@@ -376,33 +383,54 @@ class Sidebar {
     const groups = new Map();
     this.items.replaceChildren();
     for (const change of result.changes) {
-      if (!groups.has(change.graph)) {
-        const group = element("section", "cd-group");
-        const path = result.after.paths.get(change.graph) ?? result.before.paths.get(change.graph) ?? [];
-        group.append(element("h3", "", pathLabel(path)));
-        groups.set(change.graph, group);
-        this.items.append(group);
-      }
-      const row = description(change, result);
-      const container = element("div", "cd-entry");
-      const select = button("", () => this.locate(change, result, select), "cd-change");
-      select.setAttribute("aria-pressed", "false");
-      select.append(element("span", `cd-kind ${row.color ? `cd-${row.color}` : ""}`, row.label));
-      select.append(element("strong", "", row.node));
-      const node = change.after ?? change.before;
-      const provider = nodeProvider(node, nodeModules.get(node.type));
-      if (provider) select.append(element("span", "cd-node-provider", provider));
-      if (row.a !== undefined || row.b !== undefined) {
-        select.append(element("span", "cd-old", `− ${row.a}`), element("span", "cd-new", `＋ ${row.b}`));
-      }
-      container.append(select);
-      if (change.kind === "deleted") {
-        const canOpen = result.before.graphs.has(change.before.type) ||
-          (change.graph !== ROOT && !result.after.paths.has(change.graph));
-        container.append(deletedDetails(change, result, canOpen, () => this.locate(change, result, select, true)));
-      }
-      groups.get(change.graph).append(container);
+      if (!groups.has(change.graph)) groups.set(change.graph, []);
+      groups.get(change.graph).push(change);
     }
+    for (const [graph, changes] of groups) {
+      const group = element("section", "cd-group");
+      const path = result.after.paths.get(graph) ?? result.before.paths.get(graph) ?? [];
+      group.append(element("h3", "", pathLabel(path)));
+      for (const [label, kinds] of changeCategories) {
+        const entries = changes.filter((change) => kinds.has(change.kind));
+        if (!entries.length) continue;
+        const category = element("details", "cd-category");
+        const key = JSON.stringify([this.config.workspace, this.file, graph, label]);
+        category.open = !this.collapsedCategories.has(key);
+        category.ontoggle = () => {
+          if (category.open) this.collapsedCategories.delete(key);
+          else this.collapsedCategories.add(key);
+        };
+        const summary = element("summary", "", label);
+        summary.append(element("span", "cd-category-count", String(entries.length)));
+        const list = element("div", "cd-category-entries");
+        for (const change of entries) list.append(this.renderChange(change, result));
+        category.append(summary, list);
+        group.append(category);
+      }
+      this.items.append(group);
+    }
+  }
+
+  renderChange(change, result) {
+    const row = description(change, result);
+    const container = element("div", "cd-entry");
+    const select = button("", () => this.locate(change, result, select), "cd-change");
+    select.setAttribute("aria-pressed", "false");
+    select.append(element("span", `cd-kind ${row.color ? `cd-${row.color}` : ""}`, row.label));
+    select.append(element("strong", "", row.node));
+    const node = change.after ?? change.before;
+    const provider = nodeProvider(node, nodeModules.get(node.type));
+    if (provider) select.append(element("span", "cd-node-provider", provider));
+    if (row.a !== undefined || row.b !== undefined) {
+      select.append(element("span", "cd-old", `− ${row.a}`), element("span", "cd-new", `＋ ${row.b}`));
+    }
+    container.append(select);
+    if (change.kind === "deleted") {
+      const canOpen = result.before.graphs.has(change.before.type) ||
+        (change.graph !== ROOT && !result.after.paths.has(change.graph));
+      container.append(deletedDetails(change, result, canOpen, () => this.locate(change, result, select, true)));
+    }
+    return container;
   }
 
   async locate(change, result, control, openOld) {

@@ -153,11 +153,26 @@ export function nodeProvider(node, module) {
   return module?.startsWith(prefix) ? module.slice(prefix.length) : null;
 }
 
+// Custom Scripts appends a read-only "result" widget after execution.
+// Older files store it as the sixth value alongside the five actual inputs.
+const stringFunctionInputs = ["action", "tidy_tags", "text_a", "text_b", "text_c"];
+
 export function widgetSlots(node, names, positionalOnly = false) {
   const values = node.raw.widgets_values;
   const named = node.raw.widgets_values_named ?? (!Array.isArray(values) ? values : undefined);
   const explicit = named && typeof named === "object" ? Object.entries(named) : [];
   const positional = list(values);
+  if (node.type === "StringFunction|pysssss") {
+    if (explicit.length) {
+      return new Map(explicit.filter(([name]) => name !== "result")
+        .map(([name, value]) => [`widget:${name}`, { name, value }]));
+    }
+    if (positional.length === 5 || positional.length === 6) {
+      return new Map(stringFunctionInputs.map((name, index) => [
+        `widget:${name}`, { name, index, value: positional[index] },
+      ]));
+    }
+  }
   const promoted = node.inputs.filter((port) => fieldName(port)).map(fieldName);
   if (!positionalOnly && node.subgraph && positional.length && promoted.length === positional.length &&
     new Set(promoted).size === promoted.length) {
@@ -206,17 +221,28 @@ function sameSource(left, right) {
 }
 
 function widgetNames(left, right, live, getNames) {
-  // Only infer order from an instance of the same type with the same slot count.
-  const explicit = [left, right].map((node) => {
+  const names = [left, right].map((node) => {
     const { widgets_values: values, widgets_values_named: named } = node.raw;
-    if (!Array.isArray(values) || !named) return null;
-    const entries = Object.entries(named);
-    return entries.length === values.length && entries.every(([, value], index) => equal(value, values[index]))
-      ? entries.map(([name]) => name) : null;
+    if (!Array.isArray(values)) return null;
+    const entries = Object.entries(named ?? {});
+    if (entries.length && entries.length === values.length &&
+      entries.every(([, value], index) => equal(value, values[index]))) return entries.map(([name]) => name);
+    return getNames?.(live, node) ?? null;
   });
-  if (explicit[0] && explicit[1] && !equal(explicit[0], explicit[1])) return null;
-  if (!compatibleWidgetSchema(left, right)) return null;
-  return explicit[0] ?? explicit[1] ?? getNames?.(live, right) ?? null;
+  if (compatibleWidgetSchema(left, right) &&
+    Array.isArray(left.raw.widgets_values) && Array.isArray(right.raw.widgets_values) &&
+    left.raw.widgets_values.length === right.raw.widgets_values.length) {
+    return [names[0] ?? names[1], names[1] ?? names[0]];
+  }
+  // A complete widget-port layout can corroborate the order even across a
+  // version change. A partial layout cannot identify unnamed widget values.
+  const portNames = [left, right].map((node) => node.inputs.map(fieldName).filter(Boolean));
+  if (equal(portNames[0], portNames[1]) && names.some((order) => equal(order, portNames[0]))) {
+    for (const [i, node] of [left, right].entries()) {
+      if (node.raw.widgets_values?.length === portNames[i].length) names[i] ??= portNames[i];
+    }
+  }
+  return names;
 }
 
 function changesForNode(before, after, left, right, getNames) {
@@ -225,12 +251,11 @@ function changesForNode(before, after, left, right, getNames) {
   if (left.type !== right.type) return [{ kind: "replaced", before: left, after: right }];
   const rows = [];
   if (left.mode !== right.mode) rows.push({ kind: "mode", from: left.mode, to: right.mode });
-  const names = widgetNames(left, right, before.key, getNames);
-  let a = widgetSlots(left, names);
-  let b = widgetSlots(right, names);
-  const positionalOnly = Array.isArray(left.raw.widgets_values) && Array.isArray(right.raw.widgets_values) &&
-    [...a.keys(), ...b.keys()].some((key) => key.startsWith("position:"));
-  if (positionalOnly) {
+  const [oldNames, newNames] = widgetNames(left, right, before.key, getNames);
+  let a = widgetSlots(left, oldNames);
+  let b = widgetSlots(right, newNames);
+  if (Array.isArray(left.raw.widgets_values) && Array.isArray(right.raw.widgets_values) &&
+    [...a.keys(), ...b.keys()].some((key) => key.startsWith("position:"))) {
     a = widgetSlots(left, null, true);
     b = widgetSlots(right, null, true);
   }
@@ -250,7 +275,7 @@ function changesForNode(before, after, left, right, getNames) {
     const index = to?.index ?? from?.index;
     const kind = port || from?.kind === "link" || to?.kind === "link" ? "input" : "parameter";
     rows.push({
-      kind, from, to, name, port, index, names, positionalOnly, fieldKey: key, knownFields,
+      kind, from, to, name, port, index, names: newNames, fieldKey: key, knownFields,
       field: name ?? port?.name ?? `参数 ${index + 1}`,
     });
   }
@@ -302,7 +327,7 @@ export function validateChange(change, graph) {
       !equal(port.type, change.to.type) : !!port) return "当前画布中的子图端口与比较结果不同。";
   }
   if (change.fieldKey) {
-    const widgets = widgetSlots(node, change.names, change.positionalOnly);
+    const widgets = widgetSlots(node, change.names, change.fieldKey.startsWith("position:"));
     const source = inputSources(graph, node, widgets, change.knownFields).get(change.fieldKey);
     const differentSourceType = source?.kind === "link" && change.to?.kind === "link" &&
       source.edge.source.type !== change.to.edge.source.type;

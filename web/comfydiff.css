@@ -70,6 +70,7 @@
 .comfydiff .cd-change { display: grid; gap: 2px; width: 100%; padding: 7px 8px; text-align: left; }
 .cd-kind { font-size: 0.78em; }
 .cd-change strong { font-size: 0.94em; font-weight: 600; }
+.cd-node-provider { color: var(--cd-muted); font-size: 0.8em; }
 .cd-change .cd-old, .cd-change .cd-new { font-size: 0.88em; }
 .cd-details { padding: 3px 7px; }
 .cd-details summary { cursor: pointer; }

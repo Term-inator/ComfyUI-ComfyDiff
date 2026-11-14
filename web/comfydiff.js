@@ -1,11 +1,12 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { compare, equal, nodeLabel, parseWorkflow, ROOT, snapshot, sourceLabel, widgetSlots } from "./diff.js";
+import { compare, equal, nodeLabel, nodeProvider, parseWorkflow, ROOT, snapshot, sourceLabel, widgetSlots } from "./diff.js";
 import { CanvasReview, liveSnapshot, namesOnCanvas } from "./canvas.js";
 import { element } from "./graph-view.js";
 
 const TAB = "comfydiff";
 const fileByInstance = new Map();
+const nodeModules = new Map();
 const pathLabel = (path) => ["主图", ...path.map((step) => `${step.name} #${step.id}`)].join(" › ");
 const errorText = (error) => error instanceof Error ? error.message : String(error);
 const modeNames = new Map([[0, "始终"], [1, "事件时"], [2, "停用"], [3, "触发时"], [4, "旁路"]]);
@@ -388,6 +389,9 @@ class Sidebar {
       select.setAttribute("aria-pressed", "false");
       select.append(element("span", `cd-kind ${row.color ? `cd-${row.color}` : ""}`, row.label));
       select.append(element("strong", "", row.node));
+      const node = change.after ?? change.before;
+      const provider = nodeProvider(node, nodeModules.get(node.type));
+      if (provider) select.append(element("span", "cd-node-provider", provider));
       if (row.a !== undefined || row.b !== undefined) {
         select.append(element("span", "cd-old", `− ${row.a}`), element("span", "cd-new", `＋ ${row.b}`));
       }
@@ -426,6 +430,10 @@ class Sidebar {
 
 app.registerExtension({
   name: "ComfyDiff.Workflows",
+  beforeRegisterVueAppNodeDefs(definitions) {
+    nodeModules.clear();
+    for (const { name, python_module: module } of definitions) nodeModules.set(name, module);
+  },
   setup() {
     const style = element("link");
     style.rel = "stylesheet";

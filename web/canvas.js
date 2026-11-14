@@ -1,4 +1,4 @@
-import { ROOT, snapshot, validateChange } from "./diff.js";
+import { ROOT, compatibleWidgetSchema, snapshot, validateChange } from "./diff.js";
 import { bounds, enclosing, portPosition, traceEdge, openReadonly } from "./graph-view.js";
 import { canvasPoint, createGhostLayer } from "./ghost-node.js";
 
@@ -16,7 +16,11 @@ function nodeIn(graph, id) {
 
 export function namesOnCanvas(app, graph, expected) {
   const actual = nodeIn(liveGraph(app.rootGraph, graph), expected.id);
-  if (actual?.type !== expected.type || !actual.widgets) return null;
+  if (!actual?.widgets || !compatibleWidgetSchema({ type: actual.type, raw: actual }, expected)) return null;
+  for (const side of ["inputs", "outputs"]) {
+    if (actual[side]?.length !== expected[side].length ||
+      !expected[side].every((port, index) => actual[side][index].name === port.name)) return null;
+  }
   const names = actual.widgets.filter((widget) => widget.serialize !== false).map((widget) => widget.name);
   return names.every(Boolean) && new Set(names).size === names.length ? names : null;
 }

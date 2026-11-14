@@ -137,17 +137,34 @@ export function sourceLabel(edge) {
   return `${nodeLabel(edge.source)}.${edge.out.name || `输出 ${edge.out.index + 1}`}`;
 }
 
-export function widgetSlots(node, names) {
+export function compatibleWidgetSchema(left, right) {
+  const a = left.raw.properties;
+  const b = right.raw.properties;
+  return left.type === right.type &&
+    ["cnr_id", "aux_id", "ver"].every((key) => !a?.[key] || !b?.[key] || a[key] === b[key]);
+}
+
+export function nodeProvider(node, module) {
+  const { cnr_id: registry, aux_id: source } = node.raw.properties ?? {};
+  if (registry === "comfy-core") return null;
+  if (typeof registry === "string" && registry) return registry;
+  if (typeof source === "string" && source) return source;
+  const prefix = "custom_nodes.";
+  if (module === "custom_nodes.frontend_only") return "前端扩展";
+  return module?.startsWith(prefix) ? module.slice(prefix.length) : null;
+}
+
+export function widgetSlots(node, names, positionalOnly = false) {
   const values = node.raw.widgets_values;
   const named = node.raw.widgets_values_named ?? (!Array.isArray(values) ? values : undefined);
   const explicit = named && typeof named === "object" ? Object.entries(named) : [];
   const positional = list(values);
   const promoted = node.inputs.filter((port) => fieldName(port)).map(fieldName);
-  if (node.subgraph && positional.length && promoted.length === positional.length &&
+  if (!positionalOnly && node.subgraph && positional.length && promoted.length === positional.length &&
     new Set(promoted).size === promoted.length) {
     return new Map(promoted.map((name, index) => [`widget:${name}`, { name, index, value: positional[index] }]));
   }
-  if (explicit.length && (!positional.length || explicit.length === positional.length)) {
+  if (!positionalOnly && explicit.length && (!positional.length || explicit.length === positional.length)) {
     return new Map(explicit.map(([name, value]) => [`widget:${name}`, { name, value }]));
   }
   return new Map(positional.map((value, index) => {
@@ -199,6 +216,7 @@ function widgetNames(left, right, live, getNames) {
       ? entries.map(([name]) => name) : null;
   });
   if (explicit[0] && explicit[1] && !equal(explicit[0], explicit[1])) return null;
+  if (!compatibleWidgetSchema(left, right)) return null;
   return explicit[0] ?? explicit[1] ?? getNames?.(live, right) ?? null;
 }
 
@@ -209,8 +227,14 @@ function changesForNode(before, after, left, right, getNames) {
   const rows = [];
   if (left.mode !== right.mode) rows.push({ kind: "mode", from: left.mode, to: right.mode });
   const names = widgetNames(left, right, before.key, getNames);
-  const a = widgetSlots(left, names);
-  const b = widgetSlots(right, names);
+  let a = widgetSlots(left, names);
+  let b = widgetSlots(right, names);
+  const positionalOnly = Array.isArray(left.raw.widgets_values) && Array.isArray(right.raw.widgets_values) &&
+    [...a.keys(), ...b.keys()].some((key) => key.startsWith("position:"));
+  if (positionalOnly) {
+    a = widgetSlots(left, null, true);
+    b = widgetSlots(right, null, true);
+  }
   const knownFields = new Set([...a.values(), ...b.values()].map((value) => value.name).filter(Boolean));
   for (const port of [...left.inputs, ...right.inputs]) {
     const name = fieldName(port);
@@ -227,7 +251,7 @@ function changesForNode(before, after, left, right, getNames) {
     const index = to?.index ?? from?.index;
     const kind = port || from?.kind === "link" || to?.kind === "link" ? "input" : "parameter";
     rows.push({
-      kind, from, to, name, port, index, names, fieldKey: key, knownFields,
+      kind, from, to, name, port, index, names, positionalOnly, fieldKey: key, knownFields,
       field: name ?? port?.name ?? `参数 ${index + 1}`,
     });
   }
@@ -279,7 +303,7 @@ export function validateChange(change, graph) {
       !equal(port.type, change.to.type) : !!port) return "当前画布中的子图端口与比较结果不同。";
   }
   if (change.fieldKey) {
-    const widgets = widgetSlots(node, change.names);
+    const widgets = widgetSlots(node, change.names, change.positionalOnly);
     const source = inputSources(graph, node, widgets, change.knownFields).get(change.fieldKey);
     const differentSourceType = source?.kind === "link" && change.to?.kind === "link" &&
       source.edge.source.type !== change.to.edge.source.type;

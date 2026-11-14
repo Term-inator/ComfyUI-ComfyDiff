@@ -1,4 +1,4 @@
-import { ROOT, compatibleWidgetSchema, snapshot, validateChange } from "./diff.js";
+import { ROOT, compatibleWidgetSchema, equal, snapshot, validateChange } from "./diff.js";
 import { bounds, enclosing, portPosition, traceEdge, openReadonly } from "./graph-view.js";
 import { canvasPoint, createGhostLayer } from "./ghost-node.js";
 
@@ -19,12 +19,33 @@ export function namesOnCanvas(app, graph, expected) {
   if (!actual?.widgets ||
     !Object.hasOwn(window.LiteGraph?.registered_node_types ?? {}, actual.type) ||
     !compatibleWidgetSchema({ type: actual.type, raw: actual }, expected)) return null;
-  for (const side of ["inputs", "outputs"]) {
-    if (actual[side]?.length !== expected[side].length ||
-      !expected[side].every((port, index) => actual[side][index].name === port.name)) return null;
+  const widgets = actual.widgets.filter((widget) => widget.serialize !== false);
+  const names = widgets.map((widget) => widget.name);
+  if (!names.every(Boolean) || new Set(names).size !== names.length) return null;
+  const samePorts = ["inputs", "outputs"].every((side) =>
+    (actual[side]?.length ?? 0) === expected[side].length &&
+    expected[side].every((port, index) => actual[side][index].name === port.name));
+  const saved = expected.raw.widgets_values;
+  if (!Array.isArray(saved)) return null;
+  if (samePorts && names.length === saved.length) return names;
+
+  // A loaded older node may have new ports or widgets. Use its names only
+  // when the saved sequence has a single ordered match in the live values.
+  const current = widgets.map((widget) => widget.value ?? null);
+  const first = [];
+  let index = 0;
+  for (const value of saved) {
+    while (index < current.length && !equal(current[index], value)) index++;
+    if (index === current.length) return null;
+    first.push(index++);
   }
-  const names = actual.widgets.filter((widget) => widget.serialize !== false).map((widget) => widget.name);
-  return names.every(Boolean) && new Set(names).size === names.length ? names : null;
+  index = current.length - 1;
+  for (let i = saved.length - 1; i >= 0; i--) {
+    while (index > first[i] && !equal(current[index], saved[i])) index--;
+    if (index !== first[i]) return null;
+    index--;
+  }
+  return first.map((index) => names[index]);
 }
 
 function resolvePath(graph, path) {
@@ -109,8 +130,8 @@ function nodeElement(canvas, id) {
 }
 
 function widgetElement(host, name) {
-  const rows = host.querySelectorAll(`.lg-node-widget[data-widget-name="${CSS.escape(name)}"]`);
-  return rows.length === 1 ? rows[0] : null;
+  const rows = host?.querySelectorAll(`.lg-node-widget[data-widget-name="${CSS.escape(name)}"]`);
+  return rows?.length === 1 && rows[0].getClientRects().length ? rows[0] : null;
 }
 
 function markElement(canvas, node, change, source) {
@@ -125,7 +146,7 @@ function markElement(canvas, node, change, source) {
       target = dot;
       kind = "port";
     }
-  } else if (change.name) {
+  } else if (source?.kind === "value" && change.name) {
     target = widgetElement(host, change.name) ?? host;
   }
   return { target, kind };
@@ -271,6 +292,7 @@ export class CanvasReview {
     const oldBoundaryPort = change.kind === "boundary" && !change.to && change.from;
     const liveLink = source?.edge && graph.getLink(source.edge.nativeId);
     const getMark = () => !ghost && node && markElement(canvas, node, change, source);
+    const isParameter = source?.kind === "value";
     const previousDraw = canvas.onDrawForeground;
     let mark;
     const updateMark = () => {
@@ -348,7 +370,16 @@ export class CanvasReview {
       canvas.deselectAll();
       cards.get(ghost.id).focus({ preventScroll: true });
     }
-    else if (target) rects.push(Array.from(target.boundingRect));
+    else if (target) {
+      const [x, y, width, height] = target.boundingRect;
+      const widget = isParameter && change.name && widgetElement(nodeElement(canvas, node.id), change.name);
+      if (widget && height > 280 && !removedEdges.length) {
+        const [, widgetY] = canvasPoint(canvas, widget, true);
+        rects.push([x, Math.max(y, Math.min(widgetY - 140, y + height - 280)), width, 280]);
+      } else {
+        rects.push([x, y, width, height]);
+      }
+    }
     else if (node) rects.push(bounds(node));
     for (const edge of removedEdges) {
       for (const [x, y] of [endpoint(edge.source, edge.out, false), ...edge.points, endpoint(edge.target, edge.port, true)]) {
@@ -364,6 +395,13 @@ export class CanvasReview {
       canvas.setDirty(true, true);
     }
     if (openOld && removedBranch) openBranch(removedBranch, focus);
-    return true;
+    const host = isParameter && target && nodeElement(canvas, node.id);
+    if (change.kind === "parameter" && !isParameter) return "已定位到节点，当前版本没有这个参数。";
+    if (isParameter && (!change.name || !widgetElement(host, change.name))) {
+      if (!change.name) return "已定位到节点，无法可靠匹配参数控件。";
+      if (target?.flags.collapsed) return "已定位到节点。展开节点后可查看高亮的参数。";
+      return "已定位到节点，画布上没有可高亮的参数控件。";
+    }
+    return "";
   }
 }

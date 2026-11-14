@@ -623,10 +623,11 @@ class Sidebar {
     this.click = click;
     this.reloadButton.hidden = true;
     try {
-      const focused = await this.canvas.locate(change, result, openOld);
+      const note = await this.canvas.locate(change, result, openOld);
       if (this.click !== click || !this.current(context) || this.result !== result) return;
-      if (!focused) return;
-      this.showChangeCount();
+      if (note === undefined) return;
+      if (note) this.message(note);
+      else this.showChangeCount();
     } catch (error) {
       if (this.click !== click || !this.current(context) || this.result !== result) return;
       this.message(errorText(error), true);

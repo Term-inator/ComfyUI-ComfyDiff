@@ -160,17 +160,33 @@
   color: var(--cd-text);
   font-size: 12px;
   box-shadow: 0 4px 16px rgb(0 0 0 / 35%);
+  pointer-events: auto;
+}
+
+.cd-ghost-node:focus-within {
+  z-index: 1;
+  outline: 2px solid var(--cd-red);
+  outline-offset: 2px;
 }
 
 .cd-ghost-title {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 6px;
   padding: 7px 10px;
   border-radius: 9px 9px 0 0;
   background: color-mix(in srgb, var(--cd-red) 20%, var(--cd-surface));
   color: var(--cd-red);
   font-weight: 650;
   overflow-wrap: anywhere;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 
+.cd-ghost-title:active { cursor: grabbing; }
+.cd-ghost-toggle { flex: none; padding: 0 4px; color: inherit; cursor: pointer; }
 .cd-ghost-ports { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 3px 0; }
 .cd-ghost-slot { position: relative; padding: 3px 8px; overflow-wrap: anywhere; }
 .cd-ghost-out { text-align: right; }
@@ -186,6 +202,25 @@
   transform: translate(-50%, -50%);
 }
 .cd-ghost-out .cd-ghost-dot { left: auto; right: -1px; transform: translate(50%, -50%); }
+.cd-ghost-params {
+  max-height: 240px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px 8px 8px;
+}
+.cd-ghost-params p { margin: 4px 0; color: var(--cd-muted); }
+.cd-ghost-field { display: grid; gap: 3px; margin-bottom: 5px; }
+.cd-ghost-field span { color: var(--cd-muted); }
+.cd-ghost-field pre {
+  margin: 0;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--cd-surface);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
 .cd-ghost-button {
   margin: 6px 8px;
   border-color: var(--cd-red);

@@ -235,7 +235,23 @@ export class CanvasReview {
       }
     }
     const ghosts = historicalNodes.size ? createGhostLayer(canvas) : null;
-    const cards = new Map([...historicalNodes.values()].map((old) => [old.id, ghosts.add(old, before)]));
+    const cards = new Map();
+    const focus = removedBranch && removedBranch === oldPath ? { node: change.node, edge: change.from?.edge } : undefined;
+    const openBranch = (branch, selection) => {
+      if (!this.dialog?.open) this.dialog = openReadonly(before, branch, selection, head);
+    };
+    for (const old of historicalNodes.values()) {
+      const child = before.graphs.get(old.type);
+      const branch = old === ghost && removedBranch || (child && [...(before.paths.get(graphKey) ?? []), {
+        id: old.id, graph: old.type, name: old.title || child.name || "子图",
+      }]);
+      const card = ghosts.add(old, before, {
+        selected: old === ghost,
+        openSubgraph: branch && (() => openBranch(branch, old === ghost ? focus : undefined)),
+        redraw: () => canvas.setDirty(true, true),
+      });
+      cards.set(old.id, card);
+    }
     const endpoint = (old, port, input) => {
       const widget = input && old.id === change.node && source?.kind === "value" ? change.name : null;
       return ghosts?.position(old, port, input) ??
@@ -246,20 +262,6 @@ export class CanvasReview {
     const oldBoundaryPort = change.kind === "boundary" && !change.to && change.from;
     const liveLink = source?.edge && graph.getLink(source.edge.nativeId);
     const getMark = () => !ghost && node && markElement(canvas, node, change, source);
-    const focus = removedBranch && removedBranch === oldPath ? { node: change.node, edge: change.from?.edge } : undefined;
-    const showDeleted = () => {
-      if (this.dialog?.open) return;
-      this.dialog = openReadonly(before, removedBranch, focus, head);
-    };
-    const button = removedBranch && document.createElement("button");
-    if (button) {
-      button.className = "cd-ghost-button";
-      button.type = "button";
-      button.textContent = "查看已删除子图";
-      button.onclick = showDeleted;
-      cards.get(ghost.id).append(button);
-    }
-
     const previousDraw = canvas.onDrawForeground;
     let mark;
     const updateMark = () => {
@@ -328,8 +330,15 @@ export class CanvasReview {
     updateMark();
     const rects = [];
     ghosts?.sync();
-    for (const old of historicalNodes.values()) rects.push(bounds(old));
-    if (ghost) canvas.deselectAll();
+    for (const old of historicalNodes.values()) {
+      const [x, y] = bounds(old);
+      const card = cards.get(old.id);
+      rects.push([x, y, card.offsetWidth, card.offsetHeight]);
+    }
+    if (ghost) {
+      canvas.deselectAll();
+      cards.get(ghost.id).focus({ preventScroll: true });
+    }
     else if (target) rects.push(Array.from(target.boundingRect));
     else if (node) rects.push(bounds(node));
     for (const edge of removedEdges) {
@@ -345,7 +354,7 @@ export class CanvasReview {
       if (this.operation !== operation) return;
       canvas.setDirty(true, true);
     }
-    if (openOld && button) showDeleted();
+    if (openOld && removedBranch) openBranch(removedBranch, focus);
     return true;
   }
 }

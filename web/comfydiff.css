@@ -143,10 +143,53 @@
   border-radius: 50%;
   background: var(--cd-muted);
 }
+.cd-ghost-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  transform-origin: 0 0;
+}
+
+.cd-ghost-node {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px dashed var(--cd-red);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--cd-red) 14%, var(--cd-surface) 80%);
+  color: var(--cd-text);
+  font-size: 12px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 35%);
+}
+
+.cd-ghost-title {
+  padding: 7px 10px;
+  border-radius: 9px 9px 0 0;
+  background: color-mix(in srgb, var(--cd-red) 20%, var(--cd-surface));
+  color: var(--cd-red);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.cd-ghost-ports { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 3px 0; }
+.cd-ghost-slot { position: relative; padding: 3px 8px; overflow-wrap: anywhere; }
+.cd-ghost-out { text-align: right; }
+.cd-ghost-dot {
+  position: absolute;
+  top: 50%;
+  left: -1px;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--cd-red);
+  border-radius: 100%;
+  background: var(--cd-surface);
+  transform: translate(-50%, -50%);
+}
+.cd-ghost-out .cd-ghost-dot { left: auto; right: -1px; transform: translate(50%, -50%); }
 .cd-ghost-button {
-  position: fixed;
-  z-index: 40;
+  margin: 6px 8px;
   border-color: var(--cd-red);
   color: var(--cd-red);
   font-size: 0.8rem;
+  pointer-events: auto;
 }

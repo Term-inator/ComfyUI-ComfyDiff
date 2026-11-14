@@ -1,5 +1,6 @@
-import { ROOT, snapshot, nodeLabel, validateChange } from "./diff.js";
-import { bounds, enclosing, portPosition, traceEdge, element, openReadonly } from "./graph-view.js";
+import { ROOT, snapshot, validateChange } from "./diff.js";
+import { bounds, enclosing, portPosition, traceEdge, openReadonly } from "./graph-view.js";
+import { canvasPoint, createGhostLayer } from "./ghost-node.js";
 
 export function liveSnapshot(app) {
   return snapshot(JSON.parse(JSON.stringify(app.rootGraph.serialize())));
@@ -46,18 +47,28 @@ function findRoute(start, key) {
   return null;
 }
 
-function livePosition(graph, current, old, port, input) {
+function livePosition(canvas, graph, current, old, port, input, widgetName) {
   const node = current?.nodes.get(old.id);
-  const slots = input ? node?.inputs : node?.outputs;
-  const match = node?.type === old.type && slots?.find((entry) => entry.key === port.key);
-  if (!match) return portPosition(old, port, input);
+  if (node?.type !== old.type) return null;
+  const slots = input ? node.inputs : node.outputs;
+  const match = slots.find((entry) => entry.key === port.key);
   if (node.raw.boundary) {
     const boundary = input ? graph.outputNode : graph.inputNode;
-    const pos = boundary?.slots[match.index]?.pos;
-    return pos ? [pos[0], pos[1]] : portPosition(node, match, input);
+    const pos = match && boundary?.slots[match.index]?.pos;
+    return pos ? [pos[0], pos[1]] : portPosition(node, match ?? port, input);
   }
   const actual = nodeIn(graph, node.id);
-  return actual?.getSlotPosition(match.index, input) ?? portPosition(node, match, input);
+  const host = nodeElement(canvas, node.id);
+  if (widgetName && host) {
+    const widget = widgetElement(host, widgetName);
+    if (widget?.getClientRects().length) return canvasPoint(canvas, widget, true);
+  }
+  if (match) {
+    return actual?.getSlotPosition(match.index, input);
+  }
+  // The node still exists but no longer has this port.
+  const [x, y, width, height] = actual?.boundingRect ?? bounds(node);
+  return [x + (input ? 0 : width), y + Math.min(height / 2, 24)];
 }
 
 function liveReroutes(graph, link) {
@@ -86,34 +97,18 @@ function drawRemovedEdge(context, edge, endpoint, scale) {
   }
 }
 
-function drawGhost(context, node, oldGraph, before, scale) {
-  const [x, y, width, height] = bounds(node);
-  const titleHeight = 24;
-  context.setLineDash([7 / scale, 5 / scale]);
-  context.globalAlpha = 0.18;
-  context.fillStyle = context.strokeStyle;
-  context.fillRect(x, y - titleHeight, width, height + titleHeight);
-  context.globalAlpha = 0.9;
-  context.strokeRect(x, y - titleHeight, width, height + titleHeight);
-  context.setLineDash([]);
-  context.font = "600 13px system-ui";
-  context.fillText(`− ${nodeLabel(node, before)}`, x + 8, y - 8, width - 16);
-  context.font = "11px system-ui";
-  for (const edge of oldGraph.incident.get(node.id) ?? []) {
-    const input = edge.target.id === node.id;
-    const port = input ? edge.port : edge.out;
-    if (port.name) {
-      const [portX, portY] = portPosition(node, port, input);
-      context.textAlign = input ? "left" : "right";
-      context.fillText(port.name, portX + (input ? 6 : -6), portY + 4, width - 16);
-    }
-  }
+function nodeElement(canvas, id) {
+  return canvas.canvas.closest(".graph-canvas-container")
+    ?.querySelector(`.lg-node[data-node-id="${CSS.escape(id)}"]`);
+}
+
+function widgetElement(host, name) {
+  const rows = host.querySelectorAll(`.lg-node-widget[data-widget-name="${CSS.escape(name)}"]`);
+  return rows.length === 1 ? rows[0] : null;
 }
 
 function markElement(canvas, node, change, source) {
-  const root = canvas.canvas.closest(".graph-canvas-container") ?? canvas.canvas.parentElement;
-  const nodes = [...root.querySelectorAll(`.lg-node[data-node-id="${CSS.escape(node.id)}"]`)];
-  const host = nodes.length === 1 ? nodes[0] : null;
+  const host = nodeElement(canvas, node.id);
   if (!host) return null;
   let target = host;
   let kind = change.kind === "added" ? "added" : "changed";
@@ -125,8 +120,7 @@ function markElement(canvas, node, change, source) {
       kind = "port";
     }
   } else if (change.name) {
-    const rows = host.querySelectorAll(`[data-widget-name="${CSS.escape(change.name)}"].lg-node-widget`);
-    if (rows.length === 1) target = rows[0];
+    target = widgetElement(host, change.name) ?? host;
   }
   return { target, kind };
 }
@@ -231,7 +225,22 @@ export class CanvasReview {
       canvas.deselectAll();
       canvas.select(target);
     }
-    const endpoint = (old, port, input) => livePosition(graph, currentGraph, old, port, input);
+    const historicalNodes = new Map();
+    if (ghost) historicalNodes.set(ghost.id, ghost);
+    for (const edge of removedEdges) {
+      for (const old of [edge.source, edge.target]) {
+        if (!old.raw.boundary && currentGraph?.nodes.get(old.id)?.type !== old.type) {
+          historicalNodes.set(old.id, old);
+        }
+      }
+    }
+    const ghosts = historicalNodes.size ? createGhostLayer(canvas) : null;
+    const cards = new Map([...historicalNodes.values()].map((old) => [old.id, ghosts.add(old, before)]));
+    const endpoint = (old, port, input) => {
+      const widget = input && old.id === change.node && source?.kind === "value" ? change.name : null;
+      return ghosts?.position(old, port, input) ??
+        livePosition(canvas, graph, currentGraph, old, port, input, widget) ?? portPosition(old, port, input);
+    };
     const livePort = source?.port ?? change.to?.port;
     const boundaryPort = change.kind === "boundary" && change.to;
     const oldBoundaryPort = change.kind === "boundary" && !change.to && change.from;
@@ -242,11 +251,13 @@ export class CanvasReview {
       if (this.dialog?.open) return;
       this.dialog = openReadonly(before, removedBranch, focus, head);
     };
-    const button = removedBranch && element("button", "cd-ghost-button", "查看已删除子图");
+    const button = removedBranch && document.createElement("button");
     if (button) {
+      button.className = "cd-ghost-button";
       button.type = "button";
+      button.textContent = "查看已删除子图";
       button.onclick = showDeleted;
-      document.body.append(button);
+      cards.get(ghost.id).append(button);
     }
 
     const previousDraw = canvas.onDrawForeground;
@@ -263,6 +274,7 @@ export class CanvasReview {
       previousDraw?.call(this, context, area);
       if (canvas.graph !== graph || app.rootGraph !== root || root.state !== graphState) return;
       updateMark();
+      ghosts?.sync();
       const scale = canvas.ds.scale;
       const colors = getComputedStyle(document.documentElement);
       const red = colors.getPropertyValue("--cd-red").trim();
@@ -288,7 +300,6 @@ export class CanvasReview {
       context.strokeStyle = red;
       context.lineWidth = 2 / scale;
       for (const edge of removedEdges) drawRemovedEdge(context, edge, endpoint, scale);
-      if (ghost) drawGhost(context, ghost, oldGraph, before, scale);
       if (livePort || boundaryPort || oldBoundaryPort) {
         const point = boundaryPort ? endpoint(node, boundaryPort, change.side === "inputs") :
           oldBoundaryPort ? portPosition(change.before, oldBoundaryPort, change.side === "inputs") :
@@ -301,14 +312,6 @@ export class CanvasReview {
         context.stroke();
       }
       context.restore();
-      if (button) {
-        const [x, y] = bounds(ghost);
-        const [left, top] = canvas.ds.convertOffsetToCanvas([x, y - 24]);
-        const rect = canvas.canvas.getBoundingClientRect();
-        button.hidden = left < 0 || left > rect.width - 30 || top < 25 || top > rect.height;
-        button.style.left = `${rect.left + left}px`;
-        button.style.top = `${rect.top + top - 28}px`;
-      }
     };
     canvas.onDrawForeground = draw;
     const invalidate = () => {
@@ -318,13 +321,15 @@ export class CanvasReview {
     this.cleanup = () => {
       if (canvas.onDrawForeground === draw) canvas.onDrawForeground = previousDraw;
       mark?.target.removeAttribute("data-comfydiff-mark");
-      button?.remove();
+      ghosts?.remove();
       canvas.canvas.removeEventListener("litegraph:set-graph", invalidate);
       canvas.setDirty(true, true);
     };
     updateMark();
     const rects = [];
-    if (ghost) rects.push(bounds(ghost));
+    ghosts?.sync();
+    for (const old of historicalNodes.values()) rects.push(bounds(old));
+    if (ghost) canvas.deselectAll();
     else if (target) rects.push(Array.from(target.boundingRect));
     else if (node) rects.push(bounds(node));
     for (const edge of removedEdges) {
@@ -334,6 +339,12 @@ export class CanvasReview {
     }
     center(canvas, enclosing(rects), this.sidebar);
     canvas.setDirty(true, true);
+    // Vue updates the widget DOM after the canvas transform changes.
+    if (removedEdges.length && source?.kind === "value") {
+      await nextPaint();
+      if (this.operation !== operation) return;
+      canvas.setDirty(true, true);
+    }
     if (openOld && button) showDeleted();
     return true;
   }

@@ -16,7 +16,9 @@ function nodeIn(graph, id) {
 
 export function namesOnCanvas(app, graph, expected) {
   const actual = nodeIn(liveGraph(app.rootGraph, graph), expected.id);
-  if (!actual?.widgets || !compatibleWidgetSchema({ type: actual.type, raw: actual }, expected)) return null;
+  if (!actual?.widgets ||
+    !Object.hasOwn(window.LiteGraph?.registered_node_types ?? {}, actual.type) ||
+    !compatibleWidgetSchema({ type: actual.type, raw: actual }, expected)) return null;
   for (const side of ["inputs", "outputs"]) {
     if (actual[side]?.length !== expected[side].length ||
       !expected[side].every((port, index) => actual[side][index].name === port.name)) return null;

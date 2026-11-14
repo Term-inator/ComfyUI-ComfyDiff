@@ -1,12 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { compare, equal, nodeLabel, nodeProvider, parseWorkflow, ROOT, snapshot, sourceLabel, widgetSlots } from "./diff.js";
+import { compare, equal, nodeLabel, parseWorkflow, ROOT, snapshot, sourceLabel, widgetSlots } from "./diff.js";
 import { CanvasReview, liveSnapshot, namesOnCanvas } from "./canvas.js";
 import { element } from "./graph-view.js";
+import { NodeIdentity } from "./node-identity.js";
 
 const TAB = "comfydiff";
 const fileByInstance = new Map();
-const nodeModules = new Map();
+const nodeIdentity = new NodeIdentity();
 const pathLabel = (path) => ["主图", ...path.map((step) => `${step.name} #${step.id}`)].join(" › ");
 const errorText = (error) => error instanceof Error ? error.message : String(error);
 const modeNames = new Map([[0, "始终"], [1, "事件时"], [2, "停用"], [3, "触发时"], [4, "旁路"]]);
@@ -198,6 +199,7 @@ class Sidebar {
     this.canvas.clear();
     this.result = null;
     this.selected = null;
+    this.providerLabels = [];
     this.reloadButton.hidden = true;
     this.items.replaceChildren();
     this.provenance.textContent = "";
@@ -283,6 +285,12 @@ class Sidebar {
       this.selected = null;
       this.message(changes.length ? `${changes.length} 处差异` : "没有节点、参数或接线差异。");
       this.renderResults();
+      const result = this.result;
+      if (nodeIdentity.needsIndex(changes)) {
+        nodeIdentity.loadCandidates(api).then(() => {
+          if (this.result === result && this.visible) this.updateProviders();
+        });
+      }
     } catch (error) {
       if (!stillCurrent()) return;
       this.canvas.clear();
@@ -381,6 +389,7 @@ class Sidebar {
   renderResults() {
     const result = this.result;
     const groups = new Map();
+    this.providerLabels = [];
     this.items.replaceChildren();
     for (const change of result.changes) {
       if (!groups.has(change.graph)) groups.set(change.graph, []);
@@ -409,6 +418,16 @@ class Sidebar {
       }
       this.items.append(group);
     }
+    this.updateProviders();
+  }
+
+  updateProviders() {
+    for (const { node, label } of this.providerLabels) {
+      const info = nodeIdentity.identify(node);
+      label.hidden = !info;
+      label.textContent = info?.label ?? "";
+      label.title = [info?.detail, ...(info?.candidates ?? [])].filter(Boolean).join("\n");
+    }
   }
 
   renderChange(change, result) {
@@ -418,9 +437,9 @@ class Sidebar {
     select.setAttribute("aria-pressed", "false");
     select.append(element("span", `cd-kind ${row.color ? `cd-${row.color}` : ""}`, row.label));
     select.append(element("strong", "", row.node));
-    const node = change.after ?? change.before;
-    const provider = nodeProvider(node, nodeModules.get(node.type));
-    if (provider) select.append(element("span", "cd-node-provider", provider));
+    const label = element("span", "cd-node-provider");
+    this.providerLabels.push({ node: change.after ?? change.before, label });
+    select.append(label);
     if (row.a !== undefined || row.b !== undefined) {
       select.append(element("span", "cd-old", `− ${row.a}`), element("span", "cd-new", `＋ ${row.b}`));
     }
@@ -459,8 +478,7 @@ class Sidebar {
 app.registerExtension({
   name: "ComfyDiff.Workflows",
   beforeRegisterVueAppNodeDefs(definitions) {
-    nodeModules.clear();
-    for (const { name, python_module: module } of definitions) nodeModules.set(name, module);
+    nodeIdentity.setDefinitions(definitions);
   },
   setup() {
     const style = element("link");

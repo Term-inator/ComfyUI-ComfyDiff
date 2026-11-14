@@ -150,7 +150,6 @@ export function nodeProvider(node, module) {
   if (typeof registry === "string" && registry) return registry;
   if (typeof source === "string" && source) return source;
   const prefix = "custom_nodes.";
-  if (module === "custom_nodes.frontend_only") return "前端扩展";
   return module?.startsWith(prefix) ? module.slice(prefix.length) : null;
 }
 

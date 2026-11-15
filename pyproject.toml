@@ -1,0 +1,12 @@
+[project]
+name = "comfydiff"
+version = "0.1.0"
+description = "Workflow diffs and Git source control for ComfyUI"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Term-inator/ComfyUI-ComfyDiff"
+
+[tool.comfy]
+PublisherId = "terminator"
+DisplayName = "ComfyDiff"

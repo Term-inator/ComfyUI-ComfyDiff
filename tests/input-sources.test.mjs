@@ -10,6 +10,54 @@ const graph = (input, links = [], upstream = source) => snapshot({ nodes: [upstr
 const firstLink = [7, 1, 0, 2, 0, "STRING"];
 const secondLink = [8, 1, 0, 2, 1, "STRING"];
 
+test("a disk edit compares the widget values ComfyUI will restore", () => {
+  const sampler = (steps, savedSteps, restoreNamed) => snapshot({
+    nodes: [{
+      id: 1, type: "Sampler", widgets_values: [steps, 7],
+      widgets_values_named: { steps: savedSteps, cfg: 7 },
+    }],
+  }, { restoreNamed });
+
+  const before = sampler(20, 20, false);
+  const after = sampler(28, 20, false);
+  const rows = compare(before, after);
+  assert.deepEqual(rows.map(({ field, from, to }) => [field, from.value, to.value]), [["steps", 20, 28]]);
+  assert.equal(validateChange(rows[0], after.graphs.get("")).source.value, 28);
+
+  assert.deepEqual(compare(sampler(20, 20, true), sampler(28, 20, true)), []);
+  const byName = compare(sampler(20, 20, true), sampler(20, 28, true));
+  assert.deepEqual(byName.map(({ field, from, to }) => [field, from.value, to.value]), [["steps", 20, 28]]);
+});
+
+test("Workflow JSON 0.4 links survive files without slot metadata", () => {
+  const workflow = (linked, slots = false) => snapshot({
+    version: 0.4, last_node_id: 2, last_link_id: 7,
+    nodes: [
+      { id: 1, type: "TextSource", ...(slots && { outputs: [{ name: "TEXT" }] }) },
+      { id: 2, type: "TextConsumer", ...(slots && { inputs: [{ name: "text" }] }) },
+    ],
+    links: linked ? [firstLink] : [],
+  });
+  const before = workflow(false);
+  const after = workflow(true);
+  const added = compare(before, after);
+  assert.deepEqual(added.map(({ kind, field, from, to }) =>
+    [kind, field, from, to?.edge.source.id]), [["input", "输入 1", undefined, "1"]]);
+  assert.equal(validateChange(added[0], workflow(true, true).graphs.get("")).source.edge.source.id, "1");
+  assert.deepEqual(compare(after, workflow(true, true)), []);
+  assert.deepEqual(compare(after, before).map(({ from, to }) => [from?.kind, to]), [["link", undefined]]);
+});
+
+test("an unrelated wire cannot hide a same-name local widget edit", () => {
+  const consumer = (text) => ({
+    id: 2, type: "TextConsumer", inputs: [{ name: "text", link: 7 }],
+    widgets_values_named: { text },
+  });
+  const rows = compare(graph(consumer("old"), [firstLink]), graph(consumer("new"), [firstLink]));
+  assert.deepEqual(rows.map(({ kind, field, from, to }) =>
+    [kind, field, from?.value, to?.value]), [["parameter", "text", "old", "new"]]);
+});
+
 test("two local inputs becoming wires produce one change per destination", () => {
   const node = { id: 2, type: "TwoTexts", widgets_values: ["一", "二"] };
   const before = graph(node);

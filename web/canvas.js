@@ -3,8 +3,12 @@ import { bounds, edgePath, enclosing, openReadonly, portPosition, strokeMark } f
 import { canvasPoint, createGhostLayer } from "./ghost-node.js";
 import { resolveExecutionNode } from "./issues.js";
 
+export function restoresNamedWidgets(app) {
+  return app.extensionManager.setting.get("Comfy.Workflow.NamedValuesRestore") === true;
+}
+
 export function liveSnapshot(app) {
-  return snapshot(JSON.parse(JSON.stringify(app.rootGraph.serialize())));
+  return snapshot(JSON.parse(JSON.stringify(app.rootGraph.serialize())), { restoreNamed: restoresNamedWidgets(app) });
 }
 
 export function liveGraph(root, key) {
@@ -13,6 +17,17 @@ export function liveGraph(root, key) {
 
 function nodeIn(graph, id) {
   return graph?.getNodeById(String(id));
+}
+
+function widgetValueStamp(node, change) {
+  if (change.kind !== "parameter" && change.to?.kind !== "value") return;
+  const widgets = node?.widgets?.filter((widget) => widget.serialize !== false);
+  if (!widgets) return;
+  const matches = change.name ? widgets.filter(({ name }) => name === change.name) : [];
+  // Vue can update the live value before ComfyUI captures a workflow snapshot.
+  if (matches.length === 1) return JSON.stringify(matches[0].value);
+  if (change.index != null) return JSON.stringify(widgets[change.index]?.value);
+  return JSON.stringify(widgets.map(({ name, value }) => [name, value]));
 }
 
 export function namesOnCanvas(app, graph, expected) {
@@ -192,6 +207,10 @@ export class CanvasReview {
     this.sidebar = sidebar;
   }
 
+  get workflowState() {
+    return this.app.extensionManager.workflow.activeWorkflow?.activeState;
+  }
+
   async locateIssue(id) {
     const target = resolveExecutionNode(this.app.rootGraph, id);
     if (!target) throw new Error("当前画布中找不到该问题对应的节点。");
@@ -207,13 +226,13 @@ export class CanvasReview {
 
   async navigate(resolved, focus) {
     const { canvas, rootGraph: root } = this.app;
-    const state = root.state;
+    const state = this.workflowState;
     const operation = this.operation = Symbol();
     openGraph(canvas, root, resolved);
     this.syncHighlight();
     await nextPaint();
     if (this.operation !== operation || this.app.rootGraphOrUndefined !== root ||
-      root.state !== state || canvas.graph !== resolved.graph) return;
+      this.workflowState !== state || canvas.graph !== resolved.graph) return;
     return focus(canvas);
   }
 
@@ -285,11 +304,12 @@ export class CanvasReview {
     if (!selection) return;
     const { canvas, rootGraphOrUndefined: root } = this.app;
     const graph = canvas?.graph;
-    const state = root?.state;
-    const previous = selection.view;
-    if (!retry && previous?.canvas === canvas && previous.graph === graph &&
-      previous.root === root && previous.state === state) return;
-    selection.view = { canvas, graph, root, state };
+    const targetGraph = root && liveGraph(root, selection.change.graph);
+    const node = nodeIn(targetGraph, selection.change.node);
+    const view = [canvas, graph, root, this.workflowState, targetGraph?._version, node, node?.mode,
+      widgetValueStamp(node, selection.change)];
+    if (!retry && selection.view?.every((value, index) => value === view[index])) return;
+    selection.view = view;
     selection.plan = null;
     this.clearOverlay();
     if (!graph || root !== selection.root) return;
@@ -309,7 +329,7 @@ export class CanvasReview {
     const { before, after } = result;
     const canvas = app.canvas;
     const root = app.rootGraph;
-    const graphState = root.state;
+    const workflowState = this.workflowState;
     const oldPath = before.paths.get(change.graph) ?? [];
     const path = after.paths.get(change.graph) ?? oldPath;
     let resolved = resolveGraph(root, canvas.graph, change.graph, path);
@@ -325,7 +345,9 @@ export class CanvasReview {
         if (!parent) continue;
         const step = oldPath[index];
         const candidateKey = oldPath[index - 1]?.graph ?? ROOT;
-        if (nodeIn(parent.graph, step.id)) {
+        const retained = after.graphs.get(candidateKey)?.nodes.get(step.id);
+        const current = nodeIn(parent.graph, step.id);
+        if (current?.type !== retained?.type) {
           throw new Error("当前画布中的子图入口与比较结果不同。");
         }
         ghost = before.graphs.get(candidateKey).nodes.get(step.id);
@@ -360,14 +382,14 @@ export class CanvasReview {
         }
       }
     }
-    return { change, result, resolved, root, graphState, graphKey, currentGraph, ghost, removedBranch,
+    return { change, result, resolved, root, workflowState, graphKey, currentGraph, ghost, removedBranch,
       removedEdges, source, historicalNodes, focus: removedBranch === oldPath ? { node: change.node } : undefined };
   }
 
   renderHighlight(plan) {
     const { app } = this;
     const { canvas } = app;
-    const { change, result: { before, head }, resolved: { graph }, root, graphState, graphKey,
+    const { change, result: { before, head }, resolved: { graph }, root, workflowState, graphKey,
       currentGraph, ghost, removedBranch, removedEdges, source, focus, historicalNodes } = plan;
     const node = currentGraph?.nodes.get(change.node);
     const ghosts = historicalNodes.size ? createGhostLayer(canvas) : null;
@@ -415,9 +437,9 @@ export class CanvasReview {
         mark.target.style.setProperty("--cd-mark-unit", `${1 / markScale}px`);
       }
     };
-    const draw = function (context, area) {
-      previousDraw?.call(this, context, area);
-      if (canvas.graph !== graph || app.rootGraphOrUndefined !== root || root.state !== graphState) return;
+    const draw = (context, area) => {
+      previousDraw?.call(canvas, context, area);
+      if (canvas.graph !== graph || app.rootGraphOrUndefined !== root || this.workflowState !== workflowState) return;
       updateMark();
       ghosts?.sync();
       const scale = canvas.ds.scale;

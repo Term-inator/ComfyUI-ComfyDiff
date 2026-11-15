@@ -1,11 +1,12 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { compare, equal, nodeName, parseWorkflow, ROOT, snapshot, sourceLabel, widgetSlots } from "./diff.js";
-import { CanvasReview, liveSnapshot, namesOnCanvas } from "./canvas.js";
+import { CanvasReview, liveSnapshot, namesOnCanvas, restoresNamedWidgets } from "./canvas.js";
 import { element, nodeIdButton } from "./graph-view.js";
 import { collectIssues } from "./issues.js";
 import { NodeIdentity } from "./node-identity.js";
 import { createSidebarSplit } from "./sidebar-split.js";
+import { reconcileAssociation } from "./workflow-association.js";
 import { openWorkspacePicker } from "./workspace-picker.js";
 
 const TAB = "comfydiff";
@@ -383,6 +384,10 @@ class Sidebar {
     return [api.user, workflow?.instanceId, workflow?.path, workflow?.isTemporary];
   }
 
+  get reviewKey() {
+    return [this.supported, restoresNamedWidgets(app), ...this.tabKey];
+  }
+
   get association() {
     if (!equal(this.configTab, this.tabKey)) return null;
     const workflow = this.workflow;
@@ -396,7 +401,7 @@ class Sidebar {
   }
 
   currentContext() {
-    return [this.sequence, ...this.tabKey, app.rootGraphOrUndefined];
+    return [this.sequence, ...this.reviewKey, app.rootGraphOrUndefined];
   }
 
   current(context) {
@@ -498,7 +503,7 @@ class Sidebar {
       this.wasVisible = false;
       return;
     }
-    const stamp = [this.supported, ...this.tabKey];
+    const stamp = this.reviewKey;
     const tabChanged = !equal(stamp, this.stamp);
     if (tabChanged) {
       this.issueSearch.value = "";
@@ -557,11 +562,13 @@ class Sidebar {
         return;
       }
       const currentCanvas = this.mode === "canvas" && root ? liveSnapshot(app) : null;
-      const config = await request("settings", {
+      const settings = await request("settings", {
         native: workflow?.path,
         temporary: workflow?.isTemporary ? "1" : null,
       });
       if (!stillCurrent()) return;
+      const previous = equal(this.configTab, this.tabKey) ? this.config : null;
+      const config = reconcileAssociation(settings, previous);
       if (config.workspace !== this.config.workspace || config.file !== this.config.file) {
         this.clearSelection();
         this.result = null;
@@ -588,8 +595,9 @@ class Sidebar {
       });
       if (!stillCurrent()) return;
       if (data.unchanged) return;
-      const before = snapshot(data.before === null ? null : parseWorkflow(data.before, "HEAD"));
-      const after = currentCanvas ?? snapshot(parseWorkflow(data.after, "工作区"));
+      const options = { restoreNamed: restoresNamedWidgets(app) };
+      const before = snapshot(data.before === null ? null : parseWorkflow(data.before, "HEAD"), options);
+      const after = currentCanvas ?? snapshot(parseWorkflow(data.after, "工作区"), options);
       const changes = compare(before, after, (graph, node) => namesOnCanvas(app, graph, node));
       const filterContext = [api.user, workflow.instanceId, config.workspace, file];
       const sameFile = equal(this.filterContext, filterContext);
@@ -638,7 +646,7 @@ class Sidebar {
     const association = this.association;
     this.path.textContent = association?.file || this.unresolvedPath();
     this.path.title = association?.file || "";
-    this.bindButton.hidden = !this.config.workspace || !association || association.automatic || !workflow || !this.supported;
+    this.bindButton.hidden = !this.config.workspace || !association || association.source === "native" || !workflow || !this.supported;
     this.bindButton.textContent = association?.file ? "更改当前标签页关联" : "关联仓库文件";
     this.openButton.disabled = !this.config.workspace || !this.supported;
     this.refreshButton.disabled = !this.supported;
@@ -692,13 +700,13 @@ class Sidebar {
           }
           const data = parseWorkflow(content, "工作区");
           const opened = app.extensionManager.workflow.createNewTemporary(file, data);
-          fileByInstance.set(this.bindingKey(opened), { file, automatic: true });
+          fileByInstance.set(this.bindingKey(opened), { file, source: "binding" });
           const loaded = await app.loadGraphData(data, true, true, opened);
           if (!loaded || this.workflow?.instanceId !== opened.instanceId) {
             throw new Error("ComfyUI 未能打开工作流。");
           }
         } else if (workflow.isTemporary) {
-          fileByInstance.set(key, { file, automatic: false });
+          fileByInstance.set(key, { file, source: "binding" });
         } else {
           await request("binding", {}, { workspace, file, native: workflow.path });
         }
@@ -710,14 +718,15 @@ class Sidebar {
     const workflow = this.workflow;
     if (!this.selected || this.mode !== "disk") return;
     const context = this.currentContext();
-    const graphState = app.rootGraphOrUndefined?.state;
+    const workflowState = workflow?.activeState;
     const click = this.click;
     if (workflow?.isModified) throw new Error("当前画布有未保存编辑，可切换到「对比当前画布」。");
     const { content } = await request("file", { workspace: this.config.workspace, file: this.file });
-    if (!this.current(context) || this.click !== click || app.rootGraphOrUndefined?.state !== graphState) return;
+    if (!this.current(context) || this.click !== click || workflow?.activeState !== workflowState) return;
     if (workflow.isModified) throw new Error("当前画布有未保存编辑，可切换到「对比当前画布」。");
+    const data = parseWorkflow(content, "工作区");
     this.canvas.clear();
-    const loaded = await app.loadGraphData(parseWorkflow(content, "工作区"), true, true, workflow);
+    const loaded = await app.loadGraphData(data, true, true, workflow);
     if (!loaded) throw new Error("ComfyUI 未能载入磁盘版本。");
     await this.refresh();
   }
@@ -963,7 +972,7 @@ class Sidebar {
   }
 
   async locateIssue(id) {
-    if (!this.visible || this.category !== ISSUES || !equal(this.stamp, [this.supported, ...this.tabKey]) ||
+    if (!this.visible || this.category !== ISSUES || !equal(this.stamp, this.reviewKey) ||
       this.graph !== app.rootGraphOrUndefined) return;
     const context = this.currentContext();
     this.issueStatus.textContent = "";
@@ -1174,7 +1183,7 @@ class Sidebar {
   }
 
   async runLocation(action, canRecover) {
-    if (!this.visible || !this.result || !equal(this.stamp, [this.supported, ...this.tabKey]) ||
+    if (!this.visible || !this.result || !equal(this.stamp, this.reviewKey) ||
       this.graph !== app.rootGraphOrUndefined) return;
     const result = this.result;
     const context = this.currentContext();

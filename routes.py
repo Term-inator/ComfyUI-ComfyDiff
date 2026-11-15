@@ -62,7 +62,7 @@ def register_routes(server):
             async with lock:
                 settings = read_settings(path)
                 if operation == "settings":
-                    repo = await asyncio.to_thread(Repository, body["workspace"])
+                    repo = await asyncio.to_thread(Repository.select, body["workspace"])
                     settings["workspace"] = str(repo.root)
                 elif operation == "binding":
                     root = configured(settings, body["workspace"])
@@ -87,13 +87,13 @@ def register_routes(server):
             root = settings["workspace"]
             native = query.get("native")
             relative = None
-            automatic = False
+            source = None
             if root and native and native.startswith("workflows/"):
                 temporary = query.get("temporary") == "1"
                 native_root = None if temporary else users.get_request_user_filepath(request, None, create_dir=False)
                 binding = None if temporary else settings["bindings"].get(root, {}).get(native)
-                relative, automatic = resolve_workflow(root, native, native_root, binding)
-            return {"workspace": root, "file": relative, "automatic": automatic}
+                relative, source = resolve_workflow(root, native, native_root, binding)
+            return {"workspace": root, "file": relative, "source": source}
 
         root = configured(settings, query.get("workspace"))
         repo = await asyncio.to_thread(Repository, root)

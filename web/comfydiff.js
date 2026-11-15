@@ -536,7 +536,10 @@ class Sidebar {
         return;
       }
       const currentCanvas = this.mode === "canvas" && root ? liveSnapshot(app) : null;
-      const config = await request("settings", { native: workflow?.isTemporary ? null : workflow?.path });
+      const config = await request("settings", {
+        native: workflow?.path,
+        temporary: workflow?.isTemporary ? "1" : null,
+      });
       if (!stillCurrent()) return;
       if (config.workspace !== this.config.workspace || config.file !== this.config.file) {
         this.clearSelection();

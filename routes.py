@@ -6,7 +6,7 @@ import tempfile
 
 from aiohttp import web
 
-from .repository import Repository, RepositoryError, workflow_path
+from .repository import Repository, RepositoryError, resolve_workflow, workflow_path
 
 
 def read_settings(path):
@@ -86,16 +86,10 @@ def register_routes(server):
             relative = None
             automatic = False
             if root and native and native.startswith("workflows/"):
-                # ComfyUI's native path is relative to the user's data directory.
-                workflow_path(native)
-                native_root = users.get_request_user_filepath(request, None, create_dir=False)
-                if native_root:
-                    resolved = (Path(native_root) / native).resolve()
-                    if resolved.is_relative_to(root):
-                        relative = resolved.relative_to(root).as_posix()
-                        automatic = True
-                if not relative:
-                    relative = settings["bindings"].get(root, {}).get(native)
+                temporary = query.get("temporary") == "1"
+                native_root = None if temporary else users.get_request_user_filepath(request, None, create_dir=False)
+                binding = None if temporary else settings["bindings"].get(root, {}).get(native)
+                relative, automatic = resolve_workflow(root, native, native_root, binding)
             return {"workspace": root, "file": relative, "automatic": automatic}
 
         root = configured(settings, query.get("workspace"))

@@ -20,6 +20,33 @@ def workflow_path(value):
     return path
 
 
+def worktree_file(root, relative):
+    path = root / workflow_path(relative)
+    if path.resolve() != path or not stat.S_ISREG(path.stat().st_mode):
+        raise RepositoryError("工作区文件必须是仓库内的普通 JSON 文件。")
+    return path
+
+
+def resolve_workflow(root, native, native_root, binding):
+    workflow_path(native)
+    root = Path(root)
+    if native_root:
+        resolved = (Path(native_root) / native).resolve()
+        if resolved.is_relative_to(root):
+            return resolved.relative_to(root).as_posix(), True
+    if binding:
+        return binding, False
+
+    # ComfyUI prefixes tab paths with workflows/, including imported tabs.
+    # Check the remaining full path directly in the configured worktree.
+    relative = native.removeprefix("workflows/")
+    try:
+        worktree_file(root, relative)
+    except (OSError, RepositoryError):
+        return None, False
+    return relative, True
+
+
 class Repository:
     def __init__(self, directory):
         if not isinstance(directory, str) or not Path(directory).is_absolute():
@@ -57,11 +84,8 @@ class Repository:
         return sorted(files)
 
     def disk(self, relative):
-        path = self.root / workflow_path(relative)
         try:
-            if path.resolve() != path or not stat.S_ISREG(path.stat().st_mode):
-                raise RepositoryError("工作区文件必须是仓库内的普通 JSON 文件。")
-            return path.read_bytes()
+            return worktree_file(self.root, relative).read_bytes()
         except FileNotFoundError as error:
             raise RepositoryError("工作区中找不到该文件，可能已移动或删除。") from error
         except OSError as error:

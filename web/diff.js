@@ -332,6 +332,13 @@ export function validateChange(change, graph) {
     const differentSourceType = source?.kind === "link" && change.to?.kind === "link" &&
       source.edge.source.type !== change.to.edge.source.type;
     if (!sameSource(source, change.to) || differentSourceType) {
+      if (source?.kind === "value" && change.to?.kind === "value") {
+        const valueText = (value) => {
+          const text = JSON.stringify(value) ?? "无";
+          return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+        };
+        return `当前画布的 ${change.field} 为 ${valueText(source.value)}，比较版本为 ${valueText(change.to.value)}。`;
+      }
       return "当前画布中的参数值或接线来源与比较结果不同。";
     }
     return { source };

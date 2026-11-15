@@ -1,6 +1,7 @@
 import { ROOT, compatibleWidgetSchema, equal, snapshot, validateChange } from "./diff.js";
 import { bounds, enclosing, portPosition, traceEdge, openReadonly } from "./graph-view.js";
 import { canvasPoint, createGhostLayer } from "./ghost-node.js";
+import { resolveExecutionNode } from "./issues.js";
 
 export function liveSnapshot(app) {
   return snapshot(JSON.parse(JSON.stringify(app.rootGraph.serialize())));
@@ -169,10 +170,39 @@ function nextPaint() {
   return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }
 
+function openGraph(canvas, root, { graph, route }) {
+  const previous = canvas.graph;
+  if (previous === graph) return;
+  const start = route.findIndex((step) => step.node.graph === previous);
+  if (start < 0 && previous !== root) canvas.setGraph(root);
+  for (const step of route.slice(Math.max(start, 0))) {
+    canvas.openSubgraph(step.graph, step.node);
+    if (canvas.graph !== step.graph) throw new Error("ComfyUI 未能进入目标子图。");
+  }
+  if (!route.length) canvas.setGraph(graph);
+}
+
 export class CanvasReview {
   constructor(app, sidebar) {
     this.app = app;
     this.sidebar = sidebar;
+  }
+
+  async locateIssue(id) {
+    this.clear();
+    const operation = Symbol();
+    this.operation = operation;
+    const { canvas, rootGraph } = this.app;
+    const target = resolveExecutionNode(rootGraph, id);
+    if (!target) throw new Error("当前画布中找不到该问题对应的节点。");
+    const state = rootGraph.state;
+    openGraph(canvas, rootGraph, target);
+    await nextPaint();
+    if (this.operation !== operation || this.app.rootGraph !== rootGraph ||
+      rootGraph.state !== state || canvas.graph !== target.graph) return;
+    canvas.deselectAll();
+    canvas.select(target.node);
+    center(canvas, target.node.boundingRect, this.sidebar);
   }
 
   clear() {
@@ -220,7 +250,7 @@ export class CanvasReview {
       }
     }
     if (!resolved) throw new Error("当前画布中找不到对应的子图路径。");
-    const { graph, route } = resolved;
+    const { graph } = resolved;
     const currentGraph = current.graphs.get(graphKey);
     if (!removedBranch) {
       const validation = validateChange(change, currentGraph);
@@ -236,16 +266,7 @@ export class CanvasReview {
     const oldGraph = before.graphs.get(graphKey);
     if (ghost) removedEdges = oldGraph.incident.get(ghost.id) ?? [];
     if (change.from?.kind === "link") removedEdges = [change.from.edge];
-    const previous = canvas.graph;
-    if (previous !== graph) {
-      const start = route.findIndex((step) => step.node.graph === previous);
-      if (start < 0 && previous !== root) canvas.setGraph(root);
-      for (const step of route.slice(Math.max(start, 0))) {
-        canvas.openSubgraph(step.graph, step.node);
-        if (canvas.graph !== step.graph) throw new Error("ComfyUI 未能进入目标子图。");
-      }
-      if (!route.length) canvas.setGraph(graph);
-    }
+    openGraph(canvas, root, resolved);
     await nextPaint();
     if (this.operation !== operation || app.rootGraph !== root || root.state !== graphState || canvas.graph !== graph) return;
 

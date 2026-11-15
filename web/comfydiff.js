@@ -3,6 +3,7 @@ import { api } from "../../scripts/api.js";
 import { compare, equal, nodeLabel, parseWorkflow, ROOT, snapshot, sourceLabel, widgetSlots } from "./diff.js";
 import { CanvasReview, liveSnapshot, namesOnCanvas } from "./canvas.js";
 import { element } from "./graph-view.js";
+import { collectIssues } from "./issues.js";
 import { NodeIdentity } from "./node-identity.js";
 import { createSidebarSplit } from "./sidebar-split.js";
 
@@ -14,6 +15,7 @@ const pathLabel = (path) => path.length ? `主图 › ${subgraphLabel(path)}` : 
 const errorText = (error) => error instanceof Error ? error.message : String(error);
 const modeNames = new Map([[0, "始终"], [1, "事件时"], [2, "停用"], [3, "触发时"], [4, "旁路"]]);
 const ALL_GRAPHS = "*";
+const ISSUES = "issues";
 const changeCategories = [
   { id: "all", label: "全部" },
   { id: "fields", label: "参数", title: "参数与模式", kinds: ["parameter", "mode"] },
@@ -21,6 +23,47 @@ const changeCategories = [
   { id: "nodes", label: "节点", kinds: ["added", "deleted", "replaced"] },
   { id: "ports", label: "端口", title: "子图端口", kinds: ["boundary"] },
 ];
+const issueCategories = {
+  model: { label: "缺少模型", icon: "database", resource: true },
+  node: { label: "缺少节点", icon: "box" },
+  media: { label: "缺少素材", icon: "image", resource: true },
+  validation: { label: "参数校验失败", icon: "sliders-h" },
+  runtime: { label: "运行失败", icon: "bolt" },
+};
+const MAX_EXPANDED_ISSUES = 6;
+
+function searchIssues(issues, terms) {
+  if (!terms.length) return issues;
+  return issues.flatMap((issue) => {
+    const summary = [issueCategories[issue.group].label, issue.message, issue.directory].join(" ").toLowerCase();
+    const matches = (target) => {
+      const id = target.id?.toLowerCase();
+      const localId = id?.split(":").at(-1);
+      const text = [summary, target.node, id, target.detail, ...(target.details ?? [])].join(" ").toLowerCase();
+      return terms.every((term) => term.startsWith("#")
+        ? id && (term === `#${id}` || term === `#${localId}`) : text.includes(term));
+    };
+    if (!issue.targets) return matches(issue) ? [issue] : [];
+    const matchingTargets = issue.targets.filter(matches);
+    const openMatches = terms.some((term) => term.startsWith("#") || !summary.includes(term));
+    return matchingTargets.length ? [{ ...issue, matchingTargets, openMatches }] : [];
+  });
+}
+
+function issueFile(path) {
+  const file = element("code", "cd-issue-file");
+  const cutoff = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1;
+  if (cutoff) file.append(element("span", "cd-issue-directory", path.slice(0, cutoff)), element("wbr"));
+  file.append(element("span", "", path.slice(cutoff)));
+  return file;
+}
+
+function issueNodeTitle(name, id) {
+  const title = element("div", "cd-issue-title");
+  if (name) title.append(element("strong", "", name));
+  if (id) title.append(element("code", "cd-issue-id", `#${id}`));
+  return title;
+}
 
 async function request(operation, params = {}, body) {
   const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value != null));
@@ -178,6 +221,9 @@ class Sidebar {
     this.category = "all";
     this.scope = ALL_GRAPHS;
     this.rows = [];
+    this.issues = [];
+    this.issueGroupOpen = new Map();
+    this.issueItemOpen = new Set();
 
     const heading = element("header", "cd-header");
     const headerActions = element("div", "cd-header-actions");
@@ -240,7 +286,15 @@ class Sidebar {
     this.search.placeholder = "节点、参数或 ID";
     this.search.setAttribute("aria-label", "搜索差异");
     this.search.oninput = () => this.renderResults({ resetScroll: true });
-    searchField.append(icon("search"), this.search);
+    this.issueSearch = element("input", "cd-issue-search");
+    this.issueSearch.type = "search";
+    this.issueSearch.placeholder = "搜索问题、文件名或 #ID";
+    this.issueSearch.setAttribute("aria-label", "搜索问题");
+    this.issueSearch.oninput = () => {
+      this.list.scrollTop = 0;
+      this.renderIssueList();
+    };
+    searchField.append(icon("search"), this.search, this.issueSearch);
     this.scopePicker = element("select", "cd-scope");
     this.scopePicker.setAttribute("aria-label", "差异范围");
     this.scopePicker.onchange = () => {
@@ -249,13 +303,13 @@ class Sidebar {
     };
     this.tabList = element("div", "cd-tabs");
     this.tabList.setAttribute("role", "tablist");
-    this.tabList.setAttribute("aria-label", "差异类型");
+    this.tabList.setAttribute("aria-label", "工作流审查");
     this.tabList.onkeydown = (event) => this.handleTabKey(event);
     const filters = element("div", "cd-filters");
     filters.append(searchField, this.scopePicker, this.tabList);
     this.list = element("div", "cd-list");
     this.results.append(filters);
-    this.tabs = changeCategories.map((category) => {
+    this.tabs = [...changeCategories, { id: ISSUES, label: "问题" }].map((category) => {
       const control = button("", () => this.activateCategory(category.id), "cd-tab");
       const count = element("span", "cd-tab-count");
       const panel = element("div", "cd-items");
@@ -271,6 +325,10 @@ class Sidebar {
       this.list.append(panel);
       return { ...category, control, count, panel };
     });
+    this.issueTab = this.tabs.at(-1);
+    this.issueTab.count.textContent = " 0";
+    this.issueStatus = element("p", "cd-empty cd-issue-status");
+    this.issueStatus.setAttribute("role", "status");
 
     this.inspector = element("section", "cd-inspector");
     this.inspector.id = "cd-inspector";
@@ -280,22 +338,14 @@ class Sidebar {
     this.locateStatus = element("p", "cd-locate-status");
     this.locateStatus.setAttribute("role", "status");
     this.detailContent = element("div", "cd-inspector-content");
-    this.locateButton = button("", () => this.locate(), "cd-primary");
     this.useCanvasButton = button("比较当前画布并定位", () => this.setMode("canvas", true), "cd-primary");
     this.reloadButton = button("在当前标签页载入磁盘版本", () => this.safe(() => this.reloadDisk()));
-    this.detailBody.append(this.locateStatus, this.reloadButton, this.detailContent);
-    const pager = element("div", "cd-pager");
-    pager.setAttribute("role", "group");
-    pager.setAttribute("aria-label", "审查顺序");
-    this.previousButton = iconButton("chevron-left", "上一处差异", () => this.step(-1));
-    this.nextButton = iconButton("chevron-right", "下一处差异", () => this.step(1));
-    this.position = element("output");
-    this.position.setAttribute("aria-label", "当前差异序号");
-    pager.append(this.previousButton, this.position, this.nextButton);
-    const inspectActions = element("div", "cd-inspector-actions");
-    inspectActions.append(this.locateButton, this.useCanvasButton, pager);
-    this.inspector.append(this.detailBody, inspectActions);
+    const recover = element("div", "cd-actions cd-locate-actions");
+    recover.append(this.useCanvasButton, this.reloadButton);
+    this.detailBody.append(this.locateStatus, recover, this.detailContent);
+    this.inspector.append(this.detailBody);
     const panes = element("div", "cd-panes");
+    this.panes = panes;
     this.split = createSidebarSplit(panes, this.inspector);
     this.split.hidden = true;
     panes.append(this.list, this.split, this.inspector);
@@ -361,8 +411,7 @@ class Sidebar {
     this.providerLabels = [];
     this.rows = [];
     this.list.scrollTop = 0;
-    this.results.hidden = true;
-    for (const tab of this.tabs) tab.panel.replaceChildren();
+    this.renderResults();
   }
 
   clearSelection() {
@@ -386,7 +435,6 @@ class Sidebar {
     const diskMismatch = error && this.mode === "disk";
     this.reloadButton.hidden = !diskMismatch || !!this.workflow?.isModified;
     this.useCanvasButton.hidden = !diskMismatch;
-    this.locateButton.hidden = diskMismatch;
   }
 
   reviewPosition() {
@@ -405,7 +453,7 @@ class Sidebar {
       this.list.scrollTop = position.scroll;
       this.selectRow(row);
       if (locate) {
-        this.locateButton.focus({ preventScroll: true });
+        row.locator.focus({ preventScroll: true });
         void this.locate();
       }
     } else if (locate) {
@@ -414,8 +462,14 @@ class Sidebar {
   }
 
   setResultsBusy(busy) {
-    this.results.inert = busy;
-    this.results.setAttribute("aria-busy", String(busy));
+    this.resultsBusy = busy;
+    this.updateResultsBusy();
+  }
+
+  updateResultsBusy() {
+    const busy = !!this.resultsBusy && this.category !== ISSUES;
+    this.panes.inert = busy;
+    this.panes.setAttribute("aria-busy", String(busy));
   }
 
   tick() {
@@ -425,7 +479,14 @@ class Sidebar {
       return;
     }
     const stamp = [this.supported, ...this.tabKey];
-    if (!this.wasVisible || !equal(stamp, this.stamp) || this.graph !== app.rootGraphOrUndefined) {
+    const tabChanged = !equal(stamp, this.stamp);
+    if (tabChanged) {
+      this.issueSearch.value = "";
+      this.issueGroupOpen.clear();
+      this.issueItemOpen.clear();
+    }
+    if (!this.wasVisible || tabChanged || this.graph !== app.rootGraphOrUndefined) {
+      this.issueStatus.textContent = "";
       this.wasVisible = true;
       this.stamp = stamp;
       this.graph = app.rootGraphOrUndefined;
@@ -433,6 +494,7 @@ class Sidebar {
     } else if (this.mode === "disk" && this.file && !this.reading && Date.now() >= this.nextRead) {
       this.read(false);
     }
+    this.updateIssues(tabChanged);
   }
 
   setMode(mode, locate = false) {
@@ -510,7 +572,7 @@ class Sidebar {
       const position = sameFile ? this.reviewPosition() : null;
       if (!sameFile) {
         this.scope = ALL_GRAPHS;
-        this.category = "all";
+        if (this.category !== ISSUES) this.category = "all";
         this.search.value = "";
         this.list.scrollTop = 0;
         this.filterContext = filterContext;
@@ -559,6 +621,7 @@ class Sidebar {
     this.diskButton.setAttribute("aria-pressed", String(this.mode === "disk"));
     this.canvasButton.setAttribute("aria-pressed", String(this.mode === "canvas"));
     const head = this.result?.head.slice(0, 7);
+    this.results.hidden = !workflow || !this.supported;
     this.baseline.hidden = !head;
     this.provenance.textContent = head ? `HEAD ${head}${this.result.before.graphs.size ? "" : " · 新文件"}` : "";
   }
@@ -655,10 +718,12 @@ class Sidebar {
   }
 
   activateCategory(category, focus = false) {
-    if (!this.result) return;
     if (this.category !== category) {
+      if (category === ISSUES || this.category === ISSUES) this.clearSelection();
+      this.issueStatus.textContent = "";
       this.category = category;
       this.renderResults({ resetScroll: true });
+      if (category === ISSUES) this.renderIssueList();
     }
     if (focus) this.tabs.find((tab) => tab.id === this.category).control.focus();
   }
@@ -681,7 +746,7 @@ class Sidebar {
   renderResults({ resetScroll = false } = {}) {
     const result = this.result;
     const terms = this.search.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    const inScope = result.changes.filter((change) => this.scope === ALL_GRAPHS || change.graph === this.scope);
+    const inScope = (result?.changes ?? []).filter((change) => this.scope === ALL_GRAPHS || change.graph === this.scope);
     const scoped = terms.length ? inScope.filter((change) => {
       const { before, after } = change;
       const { node, label } = description(change, result);
@@ -692,19 +757,24 @@ class Sidebar {
       return terms.every((term) => text.includes(term));
     }) : inScope;
     const selectedChange = this.selected?.change;
+    this.updateResultsBusy();
     const scroll = resetScroll ? 0 : this.list.scrollTop;
     const groups = new Map();
     this.providerLabels = [];
-    this.results.hidden = !result.changes.length;
+    const showingIssues = this.category === ISSUES;
+    this.search.hidden = this.scopePicker.hidden = showingIssues;
+    this.issueSearch.hidden = !showingIssues;
+    this.search.disabled = this.scopePicker.disabled = !result?.changes.length;
     let panel;
     let entries;
     for (const tab of this.tabs) {
-      const matches = tab.kinds ? scoped.filter((change) => tab.kinds.includes(change.kind)) : scoped;
       const active = tab.id === this.category;
-      tab.count.textContent = ` ${matches.length}`;
       tab.control.setAttribute("aria-selected", String(active));
       tab.control.tabIndex = active ? 0 : -1;
       tab.panel.hidden = !active;
+      if (tab.id === ISSUES) continue;
+      const matches = tab.kinds ? scoped.filter((change) => tab.kinds.includes(change.kind)) : scoped;
+      tab.count.textContent = ` ${matches.length}`;
       tab.panel.replaceChildren();
       if (active) {
         panel = tab.panel;
@@ -712,10 +782,14 @@ class Sidebar {
       }
     }
     this.rows = [];
+    if (this.category === ISSUES) {
+      this.list.scrollTop = scroll;
+      return;
+    }
     if (!entries.includes(selectedChange)) this.clearSelection();
     if (!entries.length) {
       panel.tabIndex = 0;
-      panel.append(element("p", "cd-empty", "这个范围没有匹配的差异。"));
+      if (result?.changes.length) panel.append(element("p", "cd-empty", "这个范围没有匹配的差异。"));
       return;
     }
     panel.removeAttribute("tabindex");
@@ -732,7 +806,7 @@ class Sidebar {
       for (const change of changes) {
         const row = this.renderChange(change, result);
         this.rows.push(row);
-        group.append(row.control);
+        group.append(row.container);
       }
       panel.append(group);
     }
@@ -741,9 +815,135 @@ class Sidebar {
     if (row) {
       this.selected = row;
       row.control.setAttribute("aria-pressed", "true");
-      this.updatePager();
     }
     this.updateProviders();
+  }
+
+  updateIssues(tabChanged) {
+    const issues = collectIssues(this.workflow, app.rootGraphOrUndefined, app.extensionManager);
+    if (!tabChanged && equal(issues, this.issues)) return;
+    this.issues = issues;
+    this.issueTab.count.textContent = ` ${issues.length}`;
+    if (this.category === ISSUES) this.renderIssueList();
+  }
+
+  renderIssueList() {
+    const terms = this.issueSearch.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const issues = searchIssues(this.issues, terms);
+    const panel = this.issueTab.panel;
+    panel.replaceChildren(this.issueStatus);
+    panel.tabIndex = 0;
+    if (!issues.length) {
+      const hasIssues = this.issues.length > 0;
+      const empty = element("p", "cd-issues-empty", hasIssues ? "没有匹配的问题。" : "ComfyUI 暂未报告问题。");
+      if (!hasIssues) empty.prepend(icon("check-circle"));
+      panel.append(empty);
+      return;
+    }
+    const groups = element("div", "cd-issue-groups");
+    for (const [id, category] of Object.entries(issueCategories)) {
+      const entries = issues.filter((issue) => issue.group === id);
+      if (!entries.length) continue;
+      const group = element("details", "cd-issue-group");
+      group.dataset.kind = id;
+      const header = element("summary", "cd-issue-group-heading");
+      header.append(icon(category.icon), element("span", "", category.label),
+        element("span", "cd-issue-count", entries.length), icon("chevron-right"));
+      group.append(header);
+      const addRows = () => {
+        if (group.childElementCount > 1) return;
+        for (const issue of entries) {
+          group.append(issue.targets ? this.renderGroupedIssue(issue, !!terms.length) : this.renderIssue(issue, category));
+        }
+      };
+      group.open = terms.length > 0 || (this.issueGroupOpen.get(id) ?? entries.length <= MAX_EXPANDED_ISSUES);
+      let open = group.open;
+      if (group.open) addRows();
+      group.ontoggle = () => {
+        if (!group.isConnected) return;
+        if (!terms.length && group.open !== open) this.issueGroupOpen.set(id, group.open);
+        open = group.open;
+        if (group.open) addRows();
+      };
+      groups.append(group);
+    }
+    panel.append(groups);
+  }
+
+  renderGroupedIssue(issue, searching) {
+    const entry = element("details", "cd-issue-entry");
+    const header = element("summary", "cd-issue-entry-heading");
+    const title = element("div", "cd-issue-entry-title");
+    title.append(issue.group === "model" ? issueFile(issue.message) : element("strong", "", issue.message));
+    if (issue.directory) title.append(element("span", "cd-issue-detail", issue.directory));
+    const affected = issue.targets.filter(({ id }) => id).length;
+    const qualifier = affected === issue.targets.length ? "影响" : "已知";
+    const count = affected ? `${qualifier} ${affected} 个节点` : "节点数量未知";
+    header.append(title, element("span", "cd-issue-affected", count), icon("chevron-right"));
+    entry.append(header);
+    const addTargets = () => {
+      if (entry.childElementCount > 1) return;
+      for (const target of issue.matchingTargets ?? issue.targets) {
+        const row = element("div", "cd-entry cd-issue cd-issue-target");
+        const content = element("div", "cd-issue-content");
+        const name = target.node || (target.id ? "" : "未知节点");
+        content.append(issueNodeTitle(name, target.id));
+        if (!target.id) content.append(element("span", "cd-issue-detail", "ComfyUI 未提供节点 ID"));
+        if (target.details.length) content.append(element("code", "cd-issue-field", target.details.join(" · ")));
+        row.append(content);
+        if (target.canLocate) row.append(this.rowLocator(`定位节点 #${target.id}`, () => this.locateIssue(target.id)));
+        entry.append(row);
+      }
+    };
+    entry.open = issue.openMatches || this.issueItemOpen.has(issue.key);
+    let open = entry.open;
+    if (open) addTargets();
+    entry.ontoggle = () => {
+      if (!entry.isConnected) return;
+      if (!searching && entry.open !== open) {
+        if (entry.open) this.issueItemOpen.add(issue.key);
+        else this.issueItemOpen.delete(issue.key);
+      }
+      open = entry.open;
+      if (open) addTargets();
+    };
+    return entry;
+  }
+
+  renderIssue(issue, category) {
+    const row = element("div", "cd-entry cd-issue");
+    const content = element("div", "cd-issue-content");
+    const title = issueNodeTitle(issue.node, issue.id);
+    if (title.hasChildNodes()) content.append(title);
+    if (category.resource) {
+      content.append(issueFile(issue.message));
+    } else if (issue.message !== issue.node) {
+      content.append(element("p", "cd-issue-message", issue.message));
+    }
+    if (issue.detail && issue.group === "validation") {
+      const detail = element("details", "cd-issue-detail");
+      detail.append(element("summary", "", "详情"), element("p", "cd-issue-message", issue.detail));
+      content.append(detail);
+    } else if (issue.detail) {
+      content.append(element("code", "cd-issue-field", issue.detail));
+    }
+    row.append(content);
+    if (issue.canLocate) {
+      row.append(this.rowLocator("定位到画布", () => this.locateIssue(issue.id)));
+    }
+    return row;
+  }
+
+  async locateIssue(id) {
+    if (!this.visible || this.category !== ISSUES || !equal(this.stamp, [this.supported, ...this.tabKey]) ||
+      this.graph !== app.rootGraphOrUndefined) return;
+    const context = this.currentContext();
+    this.issueStatus.textContent = "";
+    try {
+      await this.canvas.locateIssue(id);
+    } catch (error) {
+      if (this.current(context) && this.category === ISSUES) this.issueStatus.textContent = errorText(error);
+    }
   }
 
   updateProviders() {
@@ -757,8 +957,14 @@ class Sidebar {
 
   renderChange(change, result) {
     const detail = description(change, result);
+    const container = element("div", "cd-entry");
     const control = button("", () => this.selectRow(row), "cd-change");
-    const row = { change, detail, control };
+    const label = change.kind === "deleted" ? "在画布查看删除" : "定位到画布";
+    const locator = this.rowLocator(label, () => {
+      if (this.selected !== row) this.selectRow(row);
+      void this.locate();
+    });
+    const row = { change, detail, control, container, locator };
     control.setAttribute("aria-pressed", "false");
     const symbol = element("span", `cd-change-symbol cd-${detail.color ?? "yellow"}`,
       detail.color === "green" ? "+" : detail.color === "red" ? "−" : "↔");
@@ -768,11 +974,18 @@ class Sidebar {
     const summary = detail.summary ?? (detail.a !== undefined && detail.b !== undefined
       ? `${preview(detail.a)} → ${preview(detail.b)}` : detail.label);
     copy.append(element("strong", "", detail.node), element("span", "cd-kind", summary));
-    const label = element("span", "cd-node-provider");
-    this.providerLabels.push({ node: change.after ?? change.before, label });
-    copy.append(label);
+    const provider = element("span", "cd-node-provider");
+    this.providerLabels.push({ node: change.after ?? change.before, label: provider });
+    copy.append(provider);
     control.append(symbol, copy, element("span", "cd-node-id", isNode ? `#${change.node}` : detail.label));
+    container.append(control, locator);
     return row;
+  }
+
+  rowLocator(label, action) {
+    const locator = iconButton("map-marker", label, action);
+    locator.classList.add("cd-row-locate");
+    return locator;
   }
 
   selectRow(row) {
@@ -788,8 +1001,6 @@ class Sidebar {
     heading.append(element("strong", "", row.detail.node), element("span", "", row.detail.label));
     this.detailContent.replaceChildren(heading, this.renderDetails(row.change, this.result, row.detail));
     this.detailBody.scrollTop = 0;
-    this.locateButton.replaceChildren(icon("map-marker"), row.change.kind === "deleted" ? "在画布查看删除" : "定位到画布");
-    this.updatePager();
     this.split.hidden = false;
     this.inspector.hidden = false;
 
@@ -800,21 +1011,6 @@ class Sidebar {
     } else if (bounds.bottom > viewport.bottom) {
       this.list.scrollTop += bounds.bottom - viewport.bottom;
     }
-  }
-
-  updatePager() {
-    const index = this.rows.indexOf(this.selected);
-    this.previousButton.disabled = index <= 0;
-    this.nextButton.disabled = index >= this.rows.length - 1;
-    this.position.textContent = `${index + 1} / ${this.rows.length}`;
-  }
-
-  step(direction) {
-    const row = this.rows[this.rows.indexOf(this.selected) + direction];
-    if (!row) return;
-    const active = document.activeElement;
-    this.selectRow(row);
-    if (active?.disabled) row.control.focus({ preventScroll: true });
   }
 
   renderDetails(change, result, row) {
@@ -853,7 +1049,7 @@ class Sidebar {
       if (note !== undefined) this.showLocateStatus(note || "已定位到画布。");
     } catch (error) {
       if (this.click !== click || !this.current(context) || this.result !== result) return;
-      const hadFocus = document.activeElement === this.locateButton;
+      const hadFocus = document.activeElement === this.selected?.locator;
       this.showLocateStatus(errorText(error), true);
       this.detailBody.scrollTop = 0;
       if (hadFocus && !this.useCanvasButton.hidden) this.useCanvasButton.focus({ preventScroll: true });

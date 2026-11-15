@@ -1,5 +1,5 @@
-import { nodeLabel, widgetSlots } from "./diff.js";
-import { bounds, element } from "./graph-view.js";
+import { nodeName, widgetSlots } from "./diff.js";
+import { bounds, element, nodeIdButton } from "./graph-view.js";
 
 export function createGhostLayer(canvas) {
   const host = canvas.canvas.closest(".graph-canvas-container");
@@ -9,11 +9,13 @@ export function createGhostLayer(canvas) {
 
   function sync() {
     const [left, top] = canvas.ds.convertOffsetToCanvas([0, 0]);
-    layer.style.transform = `translate(${left}px, ${top}px) scale(${canvas.ds.scale})`;
+    const { scale } = canvas.ds;
+    layer.style.setProperty("--cd-mark-unit", `${1 / scale}px`);
+    layer.style.transform = `translate(${left}px, ${top}px) scale(${scale})`;
   }
 
   return {
-    add(node, snapshot, { openSubgraph, selected, redraw }) {
+    add(node, snapshot, { openSubgraph, selected, redraw, locate }) {
       const [x, y, width] = bounds(node);
       const card = element("section", "cd-ghost-node");
       card.dataset.cdOldNode = node.id;
@@ -23,7 +25,9 @@ export function createGhostLayer(canvas) {
       const toggle = element("button", "cd-ghost-toggle", "▾");
       toggle.type = "button";
       toggle.setAttribute("aria-label", "旧参数");
-      title.append(element("span", "", `− ${nodeLabel(node, snapshot)}`), toggle);
+      const name = element("span", "", "− ");
+      name.append(nodeIdButton(node.id, () => locate(card)), " ", nodeName(node, snapshot));
+      title.append(name, toggle);
       const ports = element("div", "cd-ghost-ports");
       const dots = new Map();
       for (const [side, entries] of [["in", node.inputs], ["out", node.outputs]]) {

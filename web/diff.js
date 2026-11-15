@@ -128,13 +128,14 @@ export function snapshot(workflow) {
   return { graphs, paths };
 }
 
-export function nodeLabel(node, graphSnapshot) {
-  if (node.raw.boundary) return node.type;
-  return `#${node.id} ${node.title || graphSnapshot?.graphs.get(node.type)?.name || node.type}`;
+export function nodeName(node, graphSnapshot) {
+  return node.title || graphSnapshot?.graphs.get(node.type)?.name || node.type;
 }
 
 export function sourceLabel(edge) {
-  return `${nodeLabel(edge.source)}.${edge.out.name || `输出 ${edge.out.index + 1}`}`;
+  const { source, out } = edge;
+  const id = source.raw.boundary ? "" : `#${source.id} `;
+  return `${id}${nodeName(source)}.${out.name || `输出 ${out.index + 1}`}`;
 }
 
 export function compatibleWidgetSchema(left, right) {

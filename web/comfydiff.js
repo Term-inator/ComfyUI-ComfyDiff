@@ -1,8 +1,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { compare, equal, nodeLabel, parseWorkflow, ROOT, snapshot, sourceLabel, widgetSlots } from "./diff.js";
+import { compare, equal, nodeName, parseWorkflow, ROOT, snapshot, sourceLabel, widgetSlots } from "./diff.js";
 import { CanvasReview, liveSnapshot, namesOnCanvas } from "./canvas.js";
-import { element } from "./graph-view.js";
+import { element, nodeIdButton } from "./graph-view.js";
 import { collectIssues } from "./issues.js";
 import { NodeIdentity } from "./node-identity.js";
 import { createSidebarSplit } from "./sidebar-split.js";
@@ -10,8 +10,7 @@ import { createSidebarSplit } from "./sidebar-split.js";
 const TAB = "comfydiff";
 const fileByInstance = new Map();
 const nodeIdentity = new NodeIdentity();
-const subgraphLabel = (path) => path.map((step) => `${step.name} #${step.id}`).join(" › ");
-const pathLabel = (path) => path.length ? `主图 › ${subgraphLabel(path)}` : "主图";
+const pathLabel = (path) => ["主图", ...path.map((step) => `${step.name} #${step.id}`)].join(" › ");
 const errorText = (error) => error instanceof Error ? error.message : String(error);
 const modeNames = new Map([[0, "始终"], [1, "事件时"], [2, "停用"], [3, "触发时"], [4, "旁路"]]);
 const ALL_GRAPHS = "*";
@@ -58,10 +57,10 @@ function issueFile(path) {
   return file;
 }
 
-function issueNodeTitle(name, id) {
+function issueNodeTitle(name, id, locate) {
   const title = element("div", "cd-issue-title");
   if (name) title.append(element("strong", "", name));
-  if (id) title.append(element("code", "cd-issue-id", `#${id}`));
+  if (id) title.append(nodeIdButton(id, locate, "cd-issue-id"));
   return title;
 }
 
@@ -147,11 +146,19 @@ function preview(value) {
   return first.length <= 54 && first === text ? first : `${first.slice(0, 54)}…`;
 }
 
+function appendEndpoint(target, node, port, input, locate, graphSnapshot, compact = false) {
+  if (!node.raw.boundary) {
+    target.append(nodeIdButton(node.id, () => locate(node)));
+    if (compact) return;
+    target.append(" ");
+  }
+  const name = nodeName(node, graphSnapshot);
+  target.append(compact ? name : `${name}.${port.name || `${input ? "输入" : "输出"} ${port.index + 1}`}`);
+}
+
 function changeNodeName(change, result) {
   const { before, after } = change;
-  const target = after ?? before;
-  const { graphs } = after ? result.after : result.before;
-  return target.title || graphs.get(target.type)?.name || target.type;
+  return nodeName(after ?? before, after ? result.after : result.before);
 }
 
 function description(change, result) {
@@ -196,7 +203,7 @@ function changeKey(change) {
   return JSON.stringify([change.graph, change.node, change.fieldKey ? "field" : change.kind, change.side, field]);
 }
 
-function deletedDetails(change, result, canOpen, onOpen) {
+function deletedDetails(change, result, canOpen, onOpen, locate) {
   const graph = result.before.graphs.get(change.graph);
   const node = change.before;
   const details = element("div", "cd-details");
@@ -209,8 +216,11 @@ function deletedDetails(change, result, canOpen, onOpen) {
     index++;
   }
   for (const edge of graph.incident.get(node.id) ?? []) {
-    const target = `${nodeLabel(edge.target, result.before)}.${edge.port.name ?? `输入 ${edge.port.index + 1}`}`;
-    body.append(element("li", "", `${sourceLabel(edge)} → ${target}`));
+    const line = element("li");
+    appendEndpoint(line, edge.source, edge.out, false, locate, result.before);
+    line.append(" → ");
+    appendEndpoint(line, edge.target, edge.port, true, locate, result.before);
+    body.append(line);
   }
   details.append(body);
   if (canOpen) details.append(button("查看已删除子图", onOpen));
@@ -438,10 +448,10 @@ class Sidebar {
     this.showLocateStatus();
   }
 
-  showLocateStatus(message = "", error = false) {
+  showLocateStatus(message = "", error = false, canRecover = true) {
     this.locateStatus.textContent = message;
     this.locateStatus.classList.toggle("cd-error", error);
-    const diskMismatch = error && this.mode === "disk";
+    const diskMismatch = error && canRecover && this.mode === "disk";
     this.reloadButton.hidden = !diskMismatch || !!this.workflow?.isModified;
     this.useCanvasButton.hidden = !diskMismatch;
   }
@@ -503,6 +513,7 @@ class Sidebar {
     } else if (this.mode === "disk" && this.file && !this.reading && Date.now() >= this.nextRead) {
       this.read(false);
     }
+    this.canvas.syncHighlight();
     this.updateIssues(tabChanged);
   }
 
@@ -718,12 +729,18 @@ class Sidebar {
     const { before, after, changes } = this.result;
     const graphs = new Map([[ALL_GRAPHS, "主图和子图"], [ROOT, "仅主图"]]);
     for (const { graph } of changes) {
-      if (!graphs.has(graph)) graphs.set(graph, `子图 · ${subgraphLabel(after.paths.get(graph) ?? before.paths.get(graph))}`);
+      if (!graphs.has(graph)) {
+        const path = after.paths.get(graph) ?? before.paths.get(graph);
+        graphs.set(graph, `子图 · ${path.map(({ name }) => name).join(" › ")}`);
+      }
     }
     if (!graphs.has(this.scope)) this.scope = ALL_GRAPHS;
     this.scopePicker.replaceChildren();
+    const names = Map.groupBy(graphs, ([, label]) => label);
     for (const [value, label] of graphs) {
       const option = element("option", "", label);
+      const matching = names.get(label);
+      if (matching.length > 1) option.textContent += ` (${matching.findIndex(([key]) => key === value) + 1})`;
       option.value = value;
       this.scopePicker.append(option);
     }
@@ -807,8 +824,16 @@ class Sidebar {
     panel.removeAttribute("tabindex");
     for (const [graph, changes] of Map.groupBy(entries, (change) => change.graph)) {
       const group = element("section", "cd-group");
-      const path = result.after.paths.get(graph) ?? result.before.paths.get(graph) ?? [];
-      const heading = element("h3", "", pathLabel(path));
+      const historical = !result.after.paths.has(graph);
+      const version = historical ? result.before : result.after;
+      const path = version.paths.get(graph) ?? [];
+      const heading = element("h3", "", "主图");
+      path.forEach((step, index) => {
+        const parent = path[index - 1]?.graph ?? ROOT;
+        const node = version.graphs.get(parent).nodes.get(step.id);
+        heading.append(` › ${step.name} `, nodeIdButton(step.id, () =>
+          this.locateReference({ graph: parent, node, historical, path: path.slice(0, index) })));
+      });
       heading.append(element("span", "", `${changes.length} 处`));
       group.append(heading);
       for (const nodeChanges of Map.groupBy(changes, (change) => change.node).values()) {
@@ -893,7 +918,7 @@ class Sidebar {
         const row = element("div", "cd-entry cd-issue cd-issue-target");
         const content = element("div", "cd-issue-content");
         const name = target.node || (target.id ? "" : "未知节点");
-        content.append(issueNodeTitle(name, target.id));
+        content.append(issueNodeTitle(name, target.id, () => this.locateIssue(target.id)));
         if (!target.id) content.append(element("span", "cd-issue-detail", "ComfyUI 未提供节点 ID"));
         if (target.details.length) content.append(element("code", "cd-issue-field", target.details.join(" · ")));
         row.append(content);
@@ -919,7 +944,7 @@ class Sidebar {
   renderIssue(issue, category) {
     const row = element("div", "cd-entry cd-issue");
     const content = element("div", "cd-issue-content");
-    const title = issueNodeTitle(issue.node, issue.id);
+    const title = issueNodeTitle(issue.node, issue.id, () => this.locateIssue(issue.id));
     if (title.hasChildNodes()) content.append(title);
     if (category.resource) {
       content.append(issueFile(issue.message));
@@ -982,7 +1007,10 @@ class Sidebar {
     const nodeName = changeNodeName(first, result);
     name.title = nodeName;
     name.append(element("strong", "", nodeName));
-    if (!node.raw.boundary) name.append(" ", element("code", "cd-node-id", `#${first.node}`));
+    if (!node.raw.boundary) {
+      name.append(" ", nodeIdButton(first.node, () =>
+        this.locateReference({ graph: first.graph, node }), "cd-node-id"));
+    }
     title.append(name, this.providerLabel(node));
     const count = element("span", "cd-node-changes-count", `${changes.length} 处`);
     count.title = `${changes.length} 处改动`;
@@ -1012,10 +1040,14 @@ class Sidebar {
   renderChange(change, result, group) {
     const detail = description(change, result);
     const container = element("div", group ? "cd-entry cd-node-change" : "cd-entry");
-    const control = button("", () => this.selectRow(row), "cd-change");
+    const control = button("", () => this.selectRow(row), "cd-change-select");
+    const content = element("div", "cd-change");
     const label = change.kind === "deleted" ? "在画布查看删除" : "定位到画布";
-    const locator = this.rowLocator(label, () => {
+    const select = () => {
       if (this.selected !== row) this.selectRow(row);
+    };
+    const locator = this.rowLocator(label, () => {
+      select();
       void this.locate();
     });
     const row = { change, detail, control, container, locator, group };
@@ -1024,26 +1056,54 @@ class Sidebar {
       detail.color === "green" ? "+" : detail.color === "red" ? "−" : "↔");
     symbol.setAttribute("aria-hidden", "true");
     const { from, to } = change;
-    const values = from?.kind === "link" && to?.kind === "link"
-      ? [`#${from.edge.source.id}`, `#${to.edge.source.id}`] : [detail.a, detail.b];
+    const values = [detail.a, detail.b];
     const hasDelta = values.every((value) => value !== undefined);
+    const delta = element("span", group ? "cd-node-change-delta" : "cd-kind");
+    if (hasDelta) {
+      [from, to].forEach((source, index) => {
+        if (index) delta.append(element("span", "cd-node-change-arrow", " → "));
+        const value = element("span", group ? index ? "cd-new" : "cd-old" : "");
+        this.appendValue(value, values[index], source, change, index === 0, {
+          compact: from?.kind === "link" && to?.kind === "link",
+          short: true,
+          select,
+        });
+        delta.append(value);
+      });
+    }
+    control.setAttribute("aria-label", [detail.node, detail.label, hasDelta ? values.join(" → ") : detail.summary]
+      .filter(Boolean).map(preview).join(" · "));
     if (group) {
       const field = element("strong", "cd-node-change-field", detail.field ?? detail.label);
       field.title = detail.field ? `${detail.field} · ${detail.label}` : detail.label;
-      const delta = element("span", "cd-node-change-delta");
-      if (hasDelta) delta.append(element("span", "cd-old", preview(values[0])),
-        element("span", "cd-node-change-arrow", "→"), element("span", "cd-new", preview(values[1])));
       delta.title = hasDelta ? values.map(String).join(" → ") : detail.label;
-      control.append(symbol, field, delta);
+      content.append(symbol, field, delta);
     } else {
       const copy = element("span", "cd-row-copy");
       const node = change.after ?? change.before;
-      const summary = detail.summary ?? (hasDelta ? values.map(preview).join(" → ") : detail.label);
-      copy.append(element("strong", "", detail.node), element("span", "cd-kind", summary), this.providerLabel(node));
-      control.append(symbol, copy, element("span", "cd-node-id", node.raw.boundary ? detail.label : `#${change.node}`));
+      if (!hasDelta) delta.textContent = detail.summary ?? detail.label;
+      copy.append(element("strong", "", detail.node), delta, this.providerLabel(node));
+      const inRemovedGraph = !result.after.paths.has(change.graph);
+      content.append(symbol, copy, node.raw.boundary ? element("span", "cd-node-id", detail.label) :
+        nodeIdButton(change.node, () => {
+          select();
+          if (change.kind === "deleted") void this.locate(inRemovedGraph);
+          else void this.locateReference({ graph: change.graph, node });
+        }, "cd-node-id"));
     }
-    container.append(control, locator);
+    container.append(control, content, locator);
     return row;
+  }
+
+  appendValue(target, value, source, change, historical, { compact, short, select } = {}) {
+    if (source?.kind !== "link") {
+      target.append(short ? preview(value) : value);
+      return;
+    }
+    appendEndpoint(target, source.edge.source, source.edge.out, false, (node) => {
+      select?.();
+      this.locateReference({ graph: change.graph, node, historical });
+    }, undefined, compact);
   }
 
   rowLocator(label, action) {
@@ -1062,6 +1122,7 @@ class Sidebar {
     this.selected?.control.setAttribute("aria-pressed", "false");
     this.selected = row;
     row.control.setAttribute("aria-pressed", "true");
+    this.canvas.highlight(row.change, this.result);
     const heading = element("div", "cd-inspector-heading");
     heading.append(element("strong", "", row.detail.node), element("span", "", row.detail.label));
     this.detailContent.replaceChildren(heading, this.renderDetails(row.change, this.result, row.detail));
@@ -1082,10 +1143,15 @@ class Sidebar {
     const content = document.createDocumentFragment();
     if (row.a !== undefined || row.b !== undefined) {
       const delta = element("dl", "cd-delta");
-      for (const [label, value, color] of [["− HEAD", row.a, "old"], [this.mode === "disk" ? "+ 磁盘" : "+ 画布", row.b, "new"]]) {
+      for (const [label, value, color, source] of [
+        ["− HEAD", row.a, "old", change.from],
+        [this.mode === "disk" ? "+ 磁盘" : "+ 画布", row.b, "new", change.to],
+      ]) {
         if (value === undefined) continue;
         const pair = element("div", `cd-${color}`);
-        pair.append(element("dt", "", label), element("dd", "", value));
+        const entry = element("dd");
+        this.appendValue(entry, value, source, change, color === "old");
+        pair.append(element("dt", "", label), entry);
         delta.append(pair);
       }
       content.append(delta);
@@ -1095,27 +1161,41 @@ class Sidebar {
     if (change.kind === "deleted") {
       const canOpen = result.before.graphs.has(change.before.type) ||
         (change.graph !== ROOT && !result.after.paths.has(change.graph));
-      content.append(deletedDetails(change, result, canOpen, () => this.locate(true)));
+      content.append(deletedDetails(change, result, canOpen, () => this.locate(true),
+        (node) => this.locateReference({ graph: change.graph, node, historical: true })));
     }
     return content;
   }
 
-  async locate(openOld = false) {
+  locateReference(reference) {
+    return this.runLocation(() => this.canvas.locateNode(reference, this.result), false);
+  }
+
+  locate(openOld = false) {
     if (!this.selected || !this.visible) return;
-    const { change } = this.selected;
+    return this.runLocation(() => this.canvas.locate(this.selected.change, this.result, openOld), true);
+  }
+
+  async runLocation(action, canRecover) {
+    if (!this.visible || !this.result || !equal(this.stamp, [this.supported, ...this.tabKey]) ||
+      this.graph !== app.rootGraphOrUndefined) return;
     const result = this.result;
     const context = this.currentContext();
     const click = Symbol();
     this.click = click;
     this.showLocateStatus();
     try {
-      const note = await this.canvas.locate(change, result, openOld);
+      const note = await action();
       if (this.click !== click || !this.current(context) || this.result !== result) return;
-      if (note !== undefined) this.showLocateStatus(note || "已定位到画布。");
+      if (note !== undefined) {
+        if (this.selected) this.showLocateStatus(note || "已定位到画布。");
+        else this.message("");
+      }
     } catch (error) {
       if (this.click !== click || !this.current(context) || this.result !== result) return;
       const hadFocus = document.activeElement === this.selected?.locator;
-      this.showLocateStatus(errorText(error), true);
+      if (this.selected) this.showLocateStatus(errorText(error), true, canRecover);
+      else this.message(errorText(error), true);
       this.detailBody.scrollTop = 0;
       if (hadFocus && !this.useCanvasButton.hidden) this.useCanvasButton.focus({ preventScroll: true });
     }

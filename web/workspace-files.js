@@ -1,4 +1,5 @@
 import { parseWorkflow } from "./diff.js";
+import { t } from "./i18n.js";
 
 export class WorkspaceFiles {
   constructor(app, request, user) {
@@ -38,11 +39,11 @@ export class WorkspaceFiles {
   baseline(workflow) {
     // The frontend resets its change tracker during tab activation. The
     // workflow's original content still holds the loaded or saved version.
-    return workflow?.originalContent ? parseWorkflow(workflow.originalContent, "打开或保存时") : workflow?.initialState;
+    return workflow?.originalContent ? parseWorkflow(workflow.originalContent, t("version.baseline")) : workflow?.initialState;
   }
 
   async activate(workflow, current) {
-    if (!workflow) throw new Error("ComfyUI 中找不到该工作流。");
+    if (!workflow) throw new Error(t("workspace.workflowNotFound"));
     if (!current()) return false;
     if (this.store.activeWorkflow?.instanceId === workflow.instanceId) return true;
     const loaded = workflow.isLoaded;
@@ -85,11 +86,11 @@ export class WorkspaceFiles {
         await this.store.syncWorkflows(directory);
         workflow = this.store.getWorkflowByPath(data.native);
       }
-      if (workflow?.isTemporary) throw new Error("同路径的临时工作流已打开。请先保存或关闭该标签页。");
+      if (workflow?.isTemporary) throw new Error(t("workspace.temporaryTabExists"));
       return this.activate(workflow, current);
     }
 
-    const workflow = this.store.createNewTemporary(file, parseWorkflow(data.content, "已保存文件"));
+    const workflow = this.store.createNewTemporary(file, parseWorkflow(data.content, t("version.disk")));
     const { instanceId, path: tabPath } = workflow;
     this.opened.set(instanceId, { user: this.user(), workspace, file, path: tabPath, version: data.version });
     try {
@@ -103,7 +104,7 @@ export class WorkspaceFiles {
     const entry = this.managed(workflow, workspace);
     const tracker = workflow?.changeTracker;
     if (!entry || !tracker || this.store.activeWorkflow?.instanceId !== workflow.instanceId) {
-      throw new Error("请选择要保存的仓库工作流。");
+      throw new Error(t("workspace.selectWorkflowToSave"));
     }
     tracker.prepareForSave();
     const content = JSON.stringify(workflow.activeState);

@@ -1,3 +1,5 @@
+import { t } from "./i18n.js";
+
 export const ROOT = "";
 
 const id = (value) => String(value);
@@ -22,7 +24,7 @@ export function parseWorkflow(text, source) {
     if (!validGraph(workflow)) throw new Error();
     return workflow;
   } catch {
-    throw new Error(`${source}的文件不是有效的编辑器工作流 JSON。`);
+    throw new Error(t("diff.invalidWorkflow", { source }));
   }
 }
 
@@ -76,7 +78,7 @@ function normalizeNode(raw, restoreNamed) {
 
 function boundary(raw, portList, input) {
   if (!raw) return null;
-  const type = input ? "子图输入" : "子图输出";
+  const type = input ? "subgraph-input" : "subgraph-output";
   return normalizeNode({
     id: raw.id, type, boundary: true,
     pos: raw.bounding?.slice(0, 2), size: raw.bounding?.slice(2, 4),
@@ -149,7 +151,7 @@ export function snapshot(workflow, { restoreNamed = false } = {}) {
       for (const node of graphs.get(key).nodes.values()) {
         if (!graphs.has(node.type) || paths.has(node.type)) continue;
         paths.set(node.type, [...paths.get(key), {
-          id: node.id, graph: node.type, name: node.title || graphs.get(node.type).name || "子图",
+          id: node.id, graph: node.type, name: node.title || graphs.get(node.type).name || t("common.subgraph"),
         }]);
         queue.push(node.type);
       }
@@ -159,13 +161,14 @@ export function snapshot(workflow, { restoreNamed = false } = {}) {
 }
 
 export function nodeName(node, graphSnapshot) {
+  if (node.raw.boundary) return t(node.type === "subgraph-input" ? "common.subgraphInput" : "common.subgraphOutput");
   return node.title || graphSnapshot?.graphs.get(node.type)?.name || node.type;
 }
 
 export function sourceLabel(edge) {
   const { source, out } = edge;
   const id = source.raw.boundary ? "" : `#${source.id} `;
-  return `${id}${nodeName(source)}.${out.name || `输出 ${out.index + 1}`}`;
+  return `${id}${nodeName(source)}.${out.name || t("common.outputNumber", { number: out.index + 1 })}`;
 }
 
 export function compatibleWidgetSchema(left, right) {
@@ -323,7 +326,7 @@ function changesForNode(before, after, left, right, getNames) {
     const kind = port || from?.kind === "link" || to?.kind === "link" ? "input" : "parameter";
     rows.push({
       kind, from, to, name, port, index, names: newNames, fieldKey: key,
-      field: name ?? port?.name ?? (port ? `输入 ${port.index + 1}` : `参数 ${index + 1}`),
+      field: name ?? port?.name ?? (port ? t("common.inputNumber", { number: port.index + 1 }) : t("common.parameterNumber", { number: index + 1 })),
     });
   }
   return rows.map((row) => ({ ...row, before: left, after: right }));
@@ -364,14 +367,14 @@ export function compare(before, after, getNames) {
 
 export function validateChange(change, graph) {
   const node = graph?.nodes.get(change.node);
-  if (change.kind === "deleted") return node ? "当前画布仍有这个节点。" : "";
-  if (!node) return "当前画布中找不到目标节点。";
-  if (node.type !== change.after.type) return `当前画布中的节点类型是 ${node.type}。`;
-  if (change.kind === "mode" && node.mode !== change.to) return "当前画布中的运行模式与比较结果不同。";
+  if (change.kind === "deleted") return node ? t("canvas.nodeStillExists") : "";
+  if (!node) return t("canvas.nodeMissing");
+  if (node.type !== change.after.type) return t("canvas.typeChanged", { type: node.type });
+  if (change.kind === "mode" && node.mode !== change.to) return t("canvas.modeChanged");
   if (change.kind === "boundary") {
     const port = node[change.side].find((entry) => entry.key === (change.to ?? change.from).key);
     if (change.to ? !port || port.name !== change.to.name || port.label !== change.to.label ||
-      !equal(port.type, change.to.type) : !!port) return "当前画布中的子图端口与比较结果不同。";
+      !equal(port.type, change.to.type) : !!port) return t("canvas.portChanged");
   }
   if (change.fieldKey) {
     const widgets = widgetSlots(node, change.names, change.fieldKey.startsWith("position:"));
@@ -387,12 +390,12 @@ export function validateChange(change, graph) {
     if (!sameSource(source, change.to) || differentSourceType) {
       if (source?.kind === "value" && change.to?.kind === "value") {
         const valueText = (value) => {
-          const text = JSON.stringify(value) ?? "无";
+          const text = JSON.stringify(value) ?? t("common.none");
           return text.length > 40 ? `${text.slice(0, 40)}…` : text;
         };
-        return `当前画布的 ${change.field} 为 ${valueText(source.value)}，比较版本为 ${valueText(change.to.value)}。`;
+        return t("canvas.valueChanged", { field: change.field, actual: valueText(source.value), expected: valueText(change.to.value) });
       }
-      return "当前画布中的参数值或接线来源与比较结果不同。";
+      return t("canvas.sourceChanged");
     }
     return { source };
   }

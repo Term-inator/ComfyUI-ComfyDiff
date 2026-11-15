@@ -1,3 +1,5 @@
+import { t } from "./i18n.js";
+
 export function resolveExecutionNode(root, id) {
   if (id == null) return null;
   const ids = String(id).split(":");
@@ -90,7 +92,7 @@ export function collectIssues(workflow, root, { lastNodeErrors, lastExecutionErr
   }
   if (lastExecutionError) {
     const { node_id, node_type, exception_type, exception_message } = lastExecutionError;
-    add("runtime", node_id, node_type, exception_message || exception_type || "运行失败");
+    add("runtime", node_id, node_type, exception_message || exception_type || t("issue.executionFailed"));
   }
   return mergeMissingIssues(issues);
 }

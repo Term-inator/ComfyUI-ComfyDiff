@@ -1,19 +1,20 @@
 import { element } from "./graph-view.js";
+import { t } from "./i18n.js";
 
 export function createSidebarSplit(panes, inspector) {
   const handle = element("div", "cd-split");
   handle.tabIndex = 0;
   handle.setAttribute("role", "separator");
   handle.setAttribute("aria-orientation", "horizontal");
-  handle.setAttribute("aria-label", "调整差异详情高度");
+  handle.setAttribute("aria-label", t("diff.resizeDetails"));
   handle.setAttribute("aria-controls", inspector.id);
-  handle.title = "上下拖动，或用方向键调整详情高度";
+  handle.title = t("diff.resizeDetailsHelp");
 
   function updateValue() {
     if (inspector.hidden || !panes.clientHeight) return;
     const percent = Math.round(100 * inspector.offsetHeight / panes.clientHeight);
     handle.setAttribute("aria-valuenow", String(percent));
-    handle.setAttribute("aria-valuetext", `详情占列表和详情区域的 ${percent}%`);
+    handle.setAttribute("aria-valuetext", t("diff.detailsPercent", { percent }));
   }
 
   function resize(height) {

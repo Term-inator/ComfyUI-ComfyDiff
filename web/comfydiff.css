@@ -231,7 +231,7 @@
 }
 .comfydiff .cd-path {
   display: grid;
-  grid-template-columns: 5.5em minmax(0, 1fr);
+  grid-template-columns: fit-content(45%) minmax(0, 1fr);
   gap: 8px;
   font-size: 0.85em;
 }
@@ -608,11 +608,17 @@
   background: color-mix(in srgb, var(--cd-yellow) 10%, var(--cd-surface));
   color: var(--cd-yellow);
 }
-.cd-delta { display: grid; gap: 3px; margin: 0; font-size: 0.86em; }
+.cd-delta {
+  display: grid;
+  grid-template-columns: fit-content(48%) minmax(0, 1fr);
+  gap: 3px 6px;
+  margin: 0;
+  font-size: 0.86em;
+}
 .cd-delta > div {
   display: grid;
-  grid-template-columns: 4.6em minmax(0, 1fr);
-  gap: 4px;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
   padding: 3px 6px;
   border-radius: 4px;
   background: color-mix(in srgb, currentColor 10%, var(--cd-surface));

@@ -1,5 +1,6 @@
 import { nodeName, widgetSlots } from "./diff.js";
 import { bounds, element, nodeIdButton } from "./graph-view.js";
+import { t } from "./i18n.js";
 
 export function createGhostLayer(canvas) {
   const host = canvas.canvas.closest(".graph-canvas-container");
@@ -24,7 +25,7 @@ export function createGhostLayer(canvas) {
       const title = element("header", "cd-ghost-title");
       const toggle = element("button", "cd-ghost-toggle", "▾");
       toggle.type = "button";
-      toggle.setAttribute("aria-label", "旧参数");
+      toggle.setAttribute("aria-label", t("canvas.oldParameters"));
       const name = element("span", "", "− ");
       name.append(nodeIdButton(node.id, () => locate(card)), " ", nodeName(node, snapshot));
       title.append(name, toggle);
@@ -33,7 +34,7 @@ export function createGhostLayer(canvas) {
       for (const [side, entries] of [["in", node.inputs], ["out", node.outputs]]) {
         const column = element("div");
         for (const port of entries) {
-          const label = port.label || port.name || `${side === "in" ? "输入" : "输出"} ${port.index + 1}`;
+          const label = port.label || port.name || t(side === "in" ? "common.inputNumber" : "common.outputNumber", { number: port.index + 1 });
           const row = element("div", `cd-ghost-slot cd-ghost-${side}`, label);
           const dot = element("span", "cd-ghost-dot");
           dot.dataset.cdOldSlot = `${side}-${port.index}`;
@@ -45,10 +46,10 @@ export function createGhostLayer(canvas) {
       }
       const params = element("div", "cd-ghost-params");
       const values = widgetSlots(node);
-      if (!values.size) params.append(element("p", "", "没有保存的参数"));
+      if (!values.size) params.append(element("p", "", t("canvas.noSavedParameters")));
       for (const [index, value] of [...values.values()].entries()) {
         const field = element("div", "cd-ghost-field");
-        field.append(element("span", "", value.name || `参数 ${index + 1}`),
+        field.append(element("span", "", value.name || t("common.parameterNumber", { number: index + 1 })),
           element("pre", "", typeof value.value === "string" ? value.value : JSON.stringify(value.value)));
         params.append(field);
       }
@@ -61,7 +62,7 @@ export function createGhostLayer(canvas) {
       toggle.onclick = () => expand(params.hidden);
       card.append(title, ports, params);
       if (openSubgraph) {
-        const button = element("button", "cd-ghost-button", "查看已删除子图");
+        const button = element("button", "cd-ghost-button", t("canvas.viewDeletedSubgraph"));
         button.type = "button";
         button.onclick = openSubgraph;
         card.append(button);

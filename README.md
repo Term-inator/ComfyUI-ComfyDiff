@@ -1,54 +1,60 @@
 # ComfyDiff
 
-ComfyDiff 是 ComfyUI 的工作流 Git 侧栏。在画布旁查看节点、参数、接线和子图的改动，点击差异定位到对应位置，再把确认过的文件暂存并提交。
+[简体中文](README.zh-CN.md) · English
 
-![工作流差异显示 KSampler 的步数从 30 增至 32，画布高亮对应控件](docs/screenshots/workflow-diff.png)
+ComfyDiff is a Git sidebar for ComfyUI workflows. Review changes to nodes, parameters, links, and subgraphs next to the canvas. Jump from a change to its location, then stage and commit the files you've reviewed.
 
-## 安装
+The interface supports English and Simplified Chinese. Select your language under **Comfy → Language** in ComfyUI settings and refresh the page. ComfyDiff uses English for other languages.
 
-在 ComfyUI 中启用 **Nodes 2.0**。Git 功能需要在运行 ComfyUI 的机器上可执行的 `git`。ComfyDiff 已在 ComfyUI 前端 `1.57.6` 上验证。[Nodes 2.0 启用指南](https://docs.comfy.org/zh-CN/interface/nodes-2)
+![A workflow diff shows KSampler steps changing from 30 to 32 and highlights the corresponding widget on the canvas](docs/screenshots/workflow-diff.en.png)
 
-将本项目的源码目录放到 `ComfyUI/custom_nodes/ComfyUI-ComfyDiff/`，确认 `__init__.py` 位于该目录的第一层。重启 ComfyUI 并刷新页面，左侧会出现「工作流差异」。[ComfyUI 自定义节点安装指南](https://docs.comfy.org/installation/install_custom_node)
+## Installation
 
-## 快速开始
+Enable **Nodes 2.0** in ComfyUI. Git features require `git` on the machine running ComfyUI. ComfyDiff was tested with ComfyUI frontend `1.57.6`. [Nodes 2.0 guide](https://docs.comfy.org/interface/nodes-2)
 
-1. 准备一个包含工作流 JSON 的 Git 仓库。如果工作流已经放在一个普通目录里，可以在目录中运行 `git init`。
-2. 打开左侧的「工作流差异」，从右上角菜单进入「Git 工作区设置」。在目录选择器中选中 **ComfyUI 服务器上的仓库根目录**，点击「选择此文件夹」。
-3. 在同一个菜单里选择「打开仓库工作流」。例如，把 `KSampler` 的 `steps` 从 `20` 改到 `28`，再看「未保存」中的前后值。点差异行旁的定位图标，可跳到这个参数。
-4. 保存工作流。原生工作流目录中的文件使用 ComfyUI 的保存按钮。通过插件新打开的目录外文件使用侧栏的「保存到仓库」。保存后可在「未暂存」中查看磁盘改动。
-5. 点击左上角返回箭头进入「源代码管理」。点「更改」中文件旁的 `+` 暂存，点「已暂存」中文件旁的 `−` 取消暂存。确认「已暂存」列表后，填写提交说明并点击「提交」。
+Place the project directory at `ComfyUI/custom_nodes/ComfyUI-ComfyDiff/` with `__init__.py` directly inside it. Restart ComfyUI and refresh the page. **Workflow Diff** will appear in the left sidebar. [ComfyUI custom node installation guide](https://docs.comfy.org/installation/install_custom_node)
 
-![源代码管理显示暂存成功的反馈，以及已暂存、更改和未保存分组](docs/screenshots/source-control.png)
+## Quick start
 
-## 比较来源
+1. Prepare a Git repository that contains your workflow JSON files. If your workflows are already in a regular folder, run `git init` there.
+2. Open **Workflow Diff** in the left sidebar and choose **Git workspace settings** from the menu in the upper right. Browse to the **repository root on the ComfyUI server** and click **Select this folder**.
+3. Choose **Open repository workflow** from the same menu. Try changing `steps` on a `KSampler` node from `20` to `28`, then review both values under **Unsaved**. Click the locate icon next to the change to jump to that parameter.
+4. Save the workflow. Use ComfyUI's save button for files in its workflow directory. For files outside that directory opened through ComfyDiff, use **Save to repository**. Review the saved changes under **Unstaged**.
+5. Click the back arrow in the upper left to open **Source Control**. Click `+` next to a file under **Changes** to stage it, or `−` next to a file under **Staged** to unstage it. Review the **Staged** list, enter a commit message, and click **Commit**.
 
-差异页默认跟随当前工作流标签。
+![Source Control shows a successful staging message and the Staged, Changes, and Unsaved groups](docs/screenshots/source-control.en.png)
 
-| 侧栏选项 | 比较内容 |
+## Comparison sources
+
+The diff view follows the active workflow tab by default.
+
+| Sidebar option | What it compares |
 | --- | --- |
-| 未暂存 | 暂存版本与磁盘上已保存的文件 |
-| 已暂存 | 当前检出的提交与暂存版本 |
-| 未保存 | 此标签页上次打开或保存时的内容与当前画布 |
+| Unstaged | The staged version and the saved file on disk |
+| Staged | The checked-out commit and the staged version |
+| Unsaved | The version from when the tab was last opened or saved and the current canvas |
 
-例如，`steps` 上次提交是 `20`，暂存时是 `28`，后来保存为 `30`，画布上又编辑到 `32`。三个来源分别显示 `20 → 28`（已暂存）、`28 → 30`（未暂存）和 `30 → 32`（未保存）。
+Suppose `steps` was `20` in the last commit, staged at `28`, saved to disk at `30`, and then edited to `32` on the canvas. **Staged** shows `20 → 28`, **Unstaged** shows `28 → 30`, and **Unsaved** shows `30 → 32`.
 
-## 日常使用
+## Everyday use
 
-- **审查画布改动。** 按节点名、参数名或 `#ID` 搜索，再按差异类别或子图范围筛选。点击差异行查看前后值和画布标记，点击节点 ID 或定位图标跳转。删除项可查看旧节点和旧接线，已暂存版本可按需在只读图中查看。只调整布局或 JSON 格式时，可以在「源代码管理」里查看文件状态。
-- **切换工作流。** 从「更改」点击文件会直接打开可编辑标签。按仓库相对路径找到已有标签时，ComfyDiff 会切回原标签并保留画布编辑。手动指定比较对象时，使用「关联仓库文件」。
-- **定位工作流问题。** 「问题」标签汇总缺失的模型、节点和素材，以及参数校验与运行错误。展开条目可查看受影响的节点。这个标签也可以独立于 Git 工作区使用。
+- **Review canvas changes.** Search by node name, parameter name, or `#ID`, and filter by change type or subgraph. Select a change to see its before and after values and highlights on the canvas. Click the node ID or locate icon to jump to it. You can inspect deleted nodes and links, or open the staged version in a read-only view. For changes to layout or JSON formatting alone, check the file status in **Source Control**.
+- **Switch workflows.** Click a workflow under **Changes** to open an editable tab. If a tab is already open for the same repository path, ComfyDiff switches to it and keeps your canvas edits. Use **Associate repository file** to choose a file to compare with the current tab.
+- **Find workflow issues.** The **Issues** tab lists missing models, nodes, and media, along with validation and execution errors. Expand an entry to see which nodes are affected. This tab is also available without a Git workspace.
 
-暂存使用磁盘文件。提交包含整个暂存区，包括通过终端暂存的文件。Git 命令由运行 ComfyUI 的系统账号执行，提交使用该账号与仓库的 Git 配置。
+Staging uses the file on disk. A commit includes everything in the staging area, including files staged from the terminal. Git runs under the system account that runs ComfyUI and uses the Git configuration for that account and repository.
 
-「保存到仓库」适用于插件已记录磁盘版本的标签。文件打开后若被其他程序改写，保存会提示冲突并保留画布编辑。
+**Save to repository** is available for tabs whose saved file version ComfyDiff has recorded. If another program changes the file after you open it, ComfyDiff reports a save conflict and preserves your canvas edits.
 
-## 开发
+## Development
 
-在插件目录运行测试。
+Run the tests from the ComfyDiff directory.
 
 ```sh
 python -m unittest discover -s tests
 node --test tests/*.test.mjs
 ```
 
-差异规则、交互细节和验收用例收录在 [需求与验收场景](docs/requirements.md)。
+See [requirements and acceptance scenarios (Chinese)](docs/requirements.md) for comparison rules, interaction details, and acceptance cases.
+
+Interface text lives in the [English catalog](web/locales/en.js) and the [Simplified Chinese catalog](web/locales/zh.js). Use the same keys and placeholders in both files when adding text.

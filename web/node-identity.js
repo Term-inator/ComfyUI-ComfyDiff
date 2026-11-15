@@ -1,4 +1,5 @@
 import { nodeProvider } from "./diff.js";
+import { t } from "./i18n.js";
 
 export class NodeIdentity {
   modules = new Map();
@@ -16,16 +17,16 @@ export class NodeIdentity {
     const registered = this.modules.has(node.type) ||
       Object.hasOwn(window.LiteGraph?.registered_node_types ?? {}, node.type);
     if (provider) {
-      return { label: provider, detail: registered ? "" : "当前 ComfyUI 未注册此类型" };
+      return { label: provider, detail: registered ? "" : t("node.unregistered") };
     }
-    if (module === "custom_nodes.frontend_only") return { label: "前端节点", detail: "扩展包未声明" };
+    if (module === "custom_nodes.frontend_only") return { label: t("node.frontend"), detail: t("node.noPackage") };
     if (registered) return null;
 
     const candidates = this.candidates?.get(node.type) ?? [];
-    const detail = "当前 ComfyUI 未注册此类型";
-    if (candidates.length === 1) return { label: `候选扩展 · ${candidates[0]}`, detail };
+    const detail = t("node.unregistered");
+    if (candidates.length === 1) return { label: t("node.candidate", { name: candidates[0] }), detail };
     if (candidates.length > 1) {
-      return { label: `来源有 ${candidates.length} 个候选`, detail, candidates };
+      return { label: t("node.candidates", { count: candidates.length }), detail, candidates };
     }
     return { label: detail, unresolved: true };
   }

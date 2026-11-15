@@ -10,39 +10,41 @@ import { reconcileAssociation } from "./workflow-association.js";
 import { openWorkspacePicker } from "./workspace-picker.js";
 import { SourceControl } from "./source-control.js";
 import { WorkspaceFiles } from "./workspace-files.js";
+import { apiError, setLocale, t } from "./i18n.js";
 
 const TAB = "comfydiff";
 const nodeIdentity = new NodeIdentity();
-const pathLabel = (path) => ["主图", ...path.map((step) => `${step.name} #${step.id}`)].join(" › ");
+const pathLabel = (path) => [t("common.rootGraph"), ...path.map((step) => `${step.name} #${step.id}`)].join(" › ");
 const errorText = (error) => error instanceof Error ? error.message : String(error);
-const modeNames = new Map([[0, "始终"], [1, "事件时"], [2, "停用"], [3, "触发时"], [4, "旁路"]]);
+const modeNames = new Map([[0, "mode.always"], [1, "mode.event"], [2, "mode.never"], [3, "mode.trigger"], [4, "mode.bypass"]]);
+const modeName = (mode) => modeNames.has(mode) ? t(modeNames.get(mode)) : mode;
 const ALL_GRAPHS = "*";
 const ISSUES = "issues";
 const sources = {
-  changed: { label: "未暂存", before: "暂存版本", after: "已保存文件", help: "已经保存到文件，但还没暂存的改动。" },
-  staged: { label: "已暂存", before: "上次提交", after: "暂存版本", help: "下次提交会包含这些改动。" },
-  canvas: { label: "未保存", before: "打开或保存时", after: "当前画布", help: "此标签页上次打开或保存后的编辑。" },
+  changed: { label: "scm.unstaged", before: "version.index", after: "version.disk", help: "diff.unstagedHelp" },
+  staged: { label: "scm.staged", before: "version.head", after: "version.index", help: "diff.stagedHelp" },
+  canvas: { label: "scm.unsaved", before: "version.baseline", after: "version.canvas", help: "diff.unsavedHelp" },
 };
 const changeCategories = [
-  { id: "all", label: "全部" },
-  { id: "fields", label: "参数", title: "参数与模式", kinds: ["parameter", "mode"] },
-  { id: "links", label: "接线", title: "接线与来源", kinds: ["input"] },
-  { id: "nodes", label: "节点", kinds: ["added", "deleted", "replaced"] },
-  { id: "ports", label: "端口", title: "子图端口", kinds: ["boundary"] },
+  { id: "all", label: "diff.all" },
+  { id: "fields", label: "diff.parameters", title: "diff.parametersAndMode", kinds: ["parameter", "mode"] },
+  { id: "links", label: "diff.links", title: "diff.linksAndSources", kinds: ["input"] },
+  { id: "nodes", label: "diff.nodes", kinds: ["added", "deleted", "replaced"] },
+  { id: "ports", label: "diff.ports", title: "diff.subgraphPorts", kinds: ["boundary"] },
 ];
 const issueCategories = {
-  model: { label: "缺少模型", icon: "database", resource: true },
-  node: { label: "缺少节点", icon: "box" },
-  media: { label: "缺少素材", icon: "image", resource: true },
-  validation: { label: "参数校验失败", icon: "sliders-h" },
-  runtime: { label: "运行失败", icon: "bolt" },
+  model: { label: "issue.missingModel", icon: "database", resource: true },
+  node: { label: "issue.missingNode", icon: "box" },
+  media: { label: "issue.missingMedia", icon: "image", resource: true },
+  validation: { label: "issue.validationFailed", icon: "sliders-h" },
+  runtime: { label: "issue.executionFailed", icon: "bolt" },
 };
 const MAX_EXPANDED_ISSUES = 6;
 
 function searchIssues(issues, terms) {
   if (!terms.length) return issues;
   return issues.flatMap((issue) => {
-    const summary = [issueCategories[issue.group].label, issue.message, issue.directory].join(" ").toLowerCase();
+    const summary = [t(issueCategories[issue.group].label), issue.message, issue.directory].join(" ").toLowerCase();
     const matches = (target) => {
       const id = target.id?.toLowerCase();
       const localId = id?.split(":").at(-1);
@@ -83,7 +85,8 @@ async function request(operation, params = {}, body) {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   } : { cache: "no-store" });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "ComfyDiff 请求失败。");
+  if (!response.ok) throw new Error(apiError(data));
+  if (data.blocked) data.blocked = t(data.blocked);
   return data;
 }
 
@@ -120,7 +123,7 @@ function formDialog(title, label, input, confirm, action, help) {
   const actions = element("div", "cd-actions");
   const submit = element("button", "cd-primary", confirm);
   submit.type = "submit";
-  actions.append(button("取消", () => dialog.close()), submit);
+  actions.append(button(t("common.cancel"), () => dialog.close()), submit);
   const status = element("p", "cd-error");
   status.setAttribute("role", "alert");
   if (help) form.append(element("p", "cd-form-help", help));
@@ -145,13 +148,13 @@ function formDialog(title, label, input, confirm, action, help) {
 }
 
 function display(value) {
-  return typeof value === "string" ? value : value === undefined ? "无" : JSON.stringify(value);
+  return typeof value === "string" ? value : value === undefined ? t("common.none") : JSON.stringify(value);
 }
 
-function sourceText(source, missing = "未连接") {
+function sourceText(source, missing = t("common.disconnected")) {
   if (!source) return missing;
   if (source.kind === "link") return sourceLabel(source.edge);
-  if (source.kind === "exposed") return "已暴露，未连接";
+  if (source.kind === "exposed") return t("diff.exposedDisconnected");
   return display(source.value);
 }
 
@@ -168,7 +171,7 @@ function appendEndpoint(target, node, port, input, locate, graphSnapshot, compac
     target.append(" ");
   }
   const name = nodeName(node, graphSnapshot);
-  target.append(compact ? name : `${name}.${port.name || `${input ? "输入" : "输出"} ${port.index + 1}`}`);
+  target.append(compact ? name : `${name}.${port.name || t(input ? "common.inputNumber" : "common.outputNumber", { number: port.index + 1 })}`);
 }
 
 function changeNodeName(change, result) {
@@ -180,33 +183,33 @@ function description(change, result) {
   const { kind, from, to, before, after } = change;
   const node = changeNodeName(change, result);
   if (kind === "added") {
-    const summary = `${after.inputs.length} 个输入 · ${after.outputs.length} 个输出`;
-    return { label: "新增节点", color: "green", node, summary };
+    const summary = t("diff.nodePorts", { inputs: after.inputs.length, outputs: after.outputs.length });
+    return { label: t("diff.addedNode"), color: "green", node, summary };
   }
-  if (kind === "deleted") return { label: "删除节点", color: "red", node };
-  if (kind === "replaced") return { label: "替换", node, a: before.type, b: after.type };
-  if (kind === "mode") return { label: "运行模式", node, a: modeNames.get(from) ?? from, b: modeNames.get(to) ?? to };
+  if (kind === "deleted") return { label: t("diff.deletedNode"), color: "red", node };
+  if (kind === "replaced") return { label: t("diff.replacedNode"), node, a: before.type, b: after.type };
+  if (kind === "mode") return { label: t("diff.executionMode"), node, a: modeName(from), b: modeName(to) };
   if (kind === "boundary") {
     const port = to ?? from;
     const field = port.label || port.name;
     return {
-      label: !from ? "新增端口" : !to ? "移除端口" : "端口变更",
+      label: !from ? t("diff.addedPort") : !to ? t("diff.removedPort") : t("diff.changedPort"),
       color: !from ? "green" : !to ? "red" : undefined,
       node: `${node} · ${field}`,
       field,
-      a: from ? `${from.label || from.name} · ${display(from.type)}` : "无",
-      b: to ? `${to.label || to.name} · ${display(to.type)}` : "无",
+      a: from ? `${from.label || from.name} · ${display(from.type)}` : t("common.none"),
+      b: to ? `${to.label || to.name} · ${display(to.type)}` : t("common.none"),
     };
   }
-  let label = "参数";
+  let label = t("diff.parameter");
   if (kind === "input") {
-    if (from?.kind === "value" || to?.kind === "value") label = "来源变化";
-    else if (from?.kind !== "link" && to?.kind === "link") label = "新增接线";
-    else if (from?.kind === "link" && to?.kind !== "link") label = "移除接线";
-    else if (from?.kind === "link" && to?.kind === "link") label = "改接线";
-    else label = "端口来源";
+    if (from?.kind === "value" || to?.kind === "value") label = t("diff.sourceChanged");
+    else if (from?.kind !== "link" && to?.kind === "link") label = t("diff.addedLink");
+    else if (from?.kind === "link" && to?.kind !== "link") label = t("diff.removedLink");
+    else if (from?.kind === "link" && to?.kind === "link") label = t("diff.changedLink");
+    else label = t("diff.portSource");
   }
-  const missing = kind === "parameter" ? "无" : "未连接";
+  const missing = kind === "parameter" ? t("common.none") : t("common.disconnected");
   return {
     label, node: `${node} · ${change.field}`, field: change.field,
     a: sourceText(from, missing), b: sourceText(to, missing),
@@ -222,12 +225,12 @@ function deletedDetails(change, result, canOpen, onOpen, locate) {
   const graph = result.before.graphs.get(change.graph);
   const node = change.before;
   const details = element("div", "cd-details");
-  details.append(element("strong", "", "旧节点详情"));
+  details.append(element("strong", "", t("diff.oldNodeDetails")));
   const body = element("ul");
-  body.append(element("li", "", `运行模式 ${modeNames.get(node.mode) ?? node.mode}`));
+  body.append(element("li", "", t("diff.executionModeValue", { mode: modeName(node.mode) })));
   let index = 0;
   for (const value of widgetSlots(node).values()) {
-    body.append(element("li", "", `${value.name || `参数 ${index + 1}`}  ${display(value.value)}`));
+    body.append(element("li", "", `${value.name || t("common.parameterNumber", { number: index + 1 })}  ${display(value.value)}`));
     index++;
   }
   for (const edge of graph.incident.get(node.id) ?? []) {
@@ -238,7 +241,7 @@ function deletedDetails(change, result, canOpen, onOpen, locate) {
     body.append(line);
   }
   details.append(body);
-  if (canOpen) details.append(button("查看已删除子图", onOpen));
+  if (canOpen) details.append(button(t("canvas.viewDeletedSubgraph"), onOpen));
   return details;
 }
 
@@ -261,24 +264,24 @@ class Sidebar {
 
     const heading = element("header", "cd-header");
     const headingTitle = element("div", "cd-header-title");
-    this.backButton = iconButton("arrow-left", "返回源代码管理", () => this.showSourceControl());
-    headingTitle.append(this.backButton, element("h2", "", "工作流差异"));
+    this.backButton = iconButton("arrow-left", t("scm.back"), () => this.showSourceControl());
+    headingTitle.append(this.backButton, element("h2", "", t("diff.title")));
     const headerActions = element("div", "cd-header-actions");
-    this.refreshButton = iconButton("refresh", "刷新比较", () => this.refresh({ preserve: true }));
+    this.refreshButton = iconButton("refresh", t("diff.refresh"), () => this.refresh({ preserve: true }));
     const menu = element("div", "cd-menu");
     menu.setAttribute("popover", "auto");
     menu.setAttribute("role", "group");
-    menu.setAttribute("aria-label", "更多比较选项");
+    menu.setAttribute("aria-label", t("diff.moreOptions"));
     this.menu = menu;
-    const more = iconButton("ellipsis-h", "更多比较选项");
+    const more = iconButton("ellipsis-h", t("diff.moreOptions"));
     more.popoverTargetElement = menu;
-    this.openButton = button("打开仓库工作流", () => {
+    this.openButton = button(t("workspace.openRepositoryWorkflow"), () => {
       menu.hidePopover();
       more.focus({ preventScroll: true });
       this.safe(() => this.chooseFile(true));
     });
-    this.openButton.title = "打开仓库工作流，已打开时切换到原标签页。";
-    menu.append(this.openButton, button("Git 工作区设置", () => {
+    this.openButton.title = t("workspace.openRepositoryWorkflowHelp");
+    menu.append(this.openButton, button(t("workspace.settings"), () => {
       menu.hidePopover();
       more.focus({ preventScroll: true });
       this.settings();
@@ -289,24 +292,24 @@ class Sidebar {
     const comparison = element("div", "cd-comparison");
     const active = element("p", "cd-path");
     this.activePath = element("strong");
-    active.append(element("span", "", "当前标签页"), this.activePath);
+    active.append(element("span", "", t("workspace.activeTab")), this.activePath);
     const paths = element("p", "cd-path");
     this.path = element("code");
-    this.bindButton = button("关联仓库文件", () => this.safe(() => this.chooseFile(false)));
-    this.bindButton.title = "只设置当前标签页的比较对象。";
-    paths.append(element("span", "", "仓库文件"), this.path);
+    this.bindButton = button(t("workspace.bindFile"), () => this.safe(() => this.chooseFile(false)));
+    this.bindButton.title = t("workspace.bindFileHelp");
+    paths.append(element("span", "", t("workspace.repositoryFile")), this.path);
     this.sourcePicker = element("div", "cd-sources");
     this.sourcePicker.setAttribute("role", "group");
-    this.sourcePicker.setAttribute("aria-label", "比较来源");
+    this.sourcePicker.setAttribute("aria-label", t("diff.source"));
     this.sourceButtons = new Map(Object.entries(sources).map(([mode, source]) => {
-      const control = button(source.label, () => this.safe(() => this.selectSource(mode)));
-      control.title = source.help;
+      const control = button(t(source.label), () => this.safe(() => this.selectSource(mode)));
+      control.title = t(source.help);
       this.sourcePicker.append(control);
       return [mode, control];
     }));
     this.canvasButton = this.sourceButtons.get("canvas");
     this.sourceSummary = element("p", "cd-source-summary");
-    this.saveButton = button("保存到仓库", () => this.safe(() => this.saveWorkspace()));
+    this.saveButton = button(t("workspace.save"), () => this.safe(() => this.saveWorkspace()));
     comparison.append(active, paths, this.bindButton, this.sourcePicker, this.sourceSummary, this.saveButton);
     this.status = element("p", "cd-status");
     this.status.setAttribute("role", "status");
@@ -318,44 +321,44 @@ class Sidebar {
     const searchField = element("div", "cd-search");
     this.search = element("input");
     this.search.type = "search";
-    this.search.placeholder = "节点、参数或 ID";
-    this.search.setAttribute("aria-label", "搜索差异");
+    this.search.placeholder = t("diff.searchPlaceholder");
+    this.search.setAttribute("aria-label", t("diff.search"));
     this.search.oninput = () => this.renderResults({ resetScroll: true });
     this.issueSearch = element("input", "cd-issue-search");
     this.issueSearch.type = "search";
-    this.issueSearch.placeholder = "搜索问题、文件名或 #ID";
-    this.issueSearch.setAttribute("aria-label", "搜索问题");
+    this.issueSearch.placeholder = t("issue.searchPlaceholder");
+    this.issueSearch.setAttribute("aria-label", t("issue.search"));
     this.issueSearch.oninput = () => {
       this.list.scrollTop = 0;
       this.renderIssueList();
     };
     searchField.append(icon("search"), this.search, this.issueSearch);
     this.scopePicker = element("select", "cd-scope");
-    this.scopePicker.setAttribute("aria-label", "差异范围");
+    this.scopePicker.setAttribute("aria-label", t("diff.scope"));
     this.scopePicker.onchange = () => {
       this.scope = this.scopePicker.value;
       this.renderResults({ resetScroll: true });
     };
     this.tabList = element("div", "cd-tabs");
     this.tabList.setAttribute("role", "tablist");
-    this.tabList.setAttribute("aria-label", "工作流审查");
+    this.tabList.setAttribute("aria-label", t("diff.review"));
     this.tabList.onkeydown = (event) => this.handleTabKey(event);
     const filters = element("div", "cd-filters");
     filters.append(searchField, this.scopePicker, this.tabList);
     this.list = element("div", "cd-list");
     this.results.append(filters);
-    this.tabs = [...changeCategories, { id: ISSUES, label: "问题" }].map((category) => {
+    this.tabs = [...changeCategories, { id: ISSUES, label: "issue.title" }].map((category) => {
       const control = button("", () => this.activateCategory(category.id), "cd-tab");
       const count = element("span", "cd-tab-count");
       const panel = element("div", "cd-items");
       control.id = `cd-category-${category.id}`;
-      control.title = category.title ?? category.label;
+      control.title = t(category.title ?? category.label);
       control.setAttribute("role", "tab");
       panel.id = `cd-panel-${category.id}`;
       panel.setAttribute("role", "tabpanel");
       panel.setAttribute("aria-labelledby", control.id);
       control.setAttribute("aria-controls", panel.id);
-      control.append(element("span", "", category.label), count);
+      control.append(element("span", "", t(category.label)), count);
       this.tabList.append(control);
       this.list.append(panel);
       return { ...category, control, count, panel };
@@ -368,13 +371,13 @@ class Sidebar {
     this.inspector = element("section", "cd-inspector");
     this.inspector.id = "cd-inspector";
     this.inspector.hidden = true;
-    this.inspector.setAttribute("aria-label", "所选差异");
+    this.inspector.setAttribute("aria-label", t("diff.selectedChange"));
     this.detailBody = element("div", "cd-inspector-body");
     this.locateStatus = element("p", "cd-locate-status");
     this.locateStatus.setAttribute("role", "status");
     this.detailContent = element("div", "cd-inspector-content");
-    this.useCanvasButton = button("比较当前画布并定位", () => this.setMode("canvas", true), "cd-primary");
-    this.reloadButton = button("在当前标签页载入磁盘版本", () => this.safe(() => this.reloadDisk()));
+    this.useCanvasButton = button(t("diff.compareCanvasAndLocate"), () => this.setMode("canvas", true), "cd-primary");
+    this.reloadButton = button(t("workspace.reloadDisk"), () => this.safe(() => this.reloadDisk()));
     const recover = element("div", "cd-actions cd-locate-actions");
     recover.append(this.useCanvasButton, this.reloadButton);
     this.detailBody.append(this.locateStatus, recover, this.detailContent);
@@ -501,7 +504,7 @@ class Sidebar {
         void this.locate();
       }
     } else if (locate) {
-      this.message("当前画布的比较结果中没有这处差异。");
+      this.message(t("diff.changeMissingOnCanvas"));
     }
   }
 
@@ -597,7 +600,7 @@ class Sidebar {
   }
 
   async openChange(row, mode) {
-    if (!this.supported) throw new Error("请在 ComfyUI 设置中启用 Nodes 2.0。");
+    if (!this.supported) throw new Error(t("canvas.enableNodes2"));
     const workspace = this.config.workspace;
     const previous = this.tabKey;
     const user = api.user;
@@ -608,7 +611,7 @@ class Sidebar {
       let opened = true;
       if (mode === "canvas") opened = await workspaceFiles.activate(row.workflow, beforeOpen);
       if (mode === "changed" && row.code !== "D") opened = await workspaceFiles.open(workspace, row.file, beforeOpen);
-      if (!opened && beforeOpen()) throw new Error("ComfyUI 未能打开工作流。");
+      if (!opened && beforeOpen()) throw new Error(t("workspace.openFailed"));
       if (!opened || !current()) return;
       this.mode = mode;
       this.pinned = mode === "canvas" ? null : { workspace, file: row.file };
@@ -657,11 +660,11 @@ class Sidebar {
     this.readId = requestId;
     this.reading = true;
     this.nextRead = Date.now() + 2500;
-    if (force && !this.result) this.message("正在读取差异…");
+    if (force && !this.result) this.message(t("diff.loading"));
     const stillCurrent = () => this.readId === requestId && this.current(context);
     try {
       if (!this.supported) {
-        this.message("请在 ComfyUI 设置中启用 Nodes 2.0。");
+        this.message(t("canvas.enableNodes2"));
         return;
       }
       const settings = await request("settings", {
@@ -690,13 +693,13 @@ class Sidebar {
       let data, before, after;
       if (this.mode === "canvas") {
         if (!workflow || !root) {
-          this.message("打开一个工作流后即可比较。");
+          this.message(t("diff.openAWorkflow"));
           return;
         }
         const saved = workspaceFiles.baseline(workflow);
         this.canvasBase = workflow.originalContent;
         if (!saved) {
-          this.message("找不到该工作流打开或保存时的版本。");
+          this.message(t("diff.baselineMissing"));
           return;
         }
         const gitStatus = this.scm.workspace === config.workspace ? this.scm.state : null;
@@ -706,23 +709,23 @@ class Sidebar {
         after = liveSnapshot(app);
       } else {
         if (!config.workspace) {
-          this.message("请在设置中选择 Git 工作区目录。");
+          this.message(t("workspace.selectInSettings"));
           return;
         }
         if (!workflow && !this.pinned) {
-          this.message("打开一个工作流后即可比较。");
+          this.message(t("diff.openAWorkflow"));
           return;
         }
         if (!file) {
-          this.message("无法自动识别仓库路径，请为当前标签页关联文件。");
+          this.message(t("workspace.pathNotRecognized"));
           return;
         }
         data = await request("compare", { workspace: config.workspace, file, mode: this.mode, known: force ? null : this.result?.token });
         if (!stillCurrent()) return;
         if (data.unchanged) return;
         const source = sources[data.mode];
-        before = snapshot(data.before === null ? null : parseWorkflow(data.before, source.before), options);
-        after = snapshot(data.after === null ? null : parseWorkflow(data.after, source.after), options);
+        before = snapshot(data.before === null ? null : parseWorkflow(data.before, t(source.before)), options);
+        after = snapshot(data.after === null ? null : parseWorkflow(data.after, t(source.after)), options);
       }
       const changes = compare(before, after, (graph, node) =>
         root && this.sameWorkflow ? namesOnCanvas(app, graph, node) : null);
@@ -737,8 +740,8 @@ class Sidebar {
       }
       this.clearSelection();
       this.result = { mode: data.mode, staged: data.staged, token: data.token, removed: data.after === null,
-        beforeLabel: sources[data.mode].before, afterLabel: sources[data.mode].after, before, after, changes };
-      this.message(changes.length ? "" : "没有检测到工作流差异。");
+        beforeLabel: t(sources[data.mode].before), afterLabel: t(sources[data.mode].after), before, after, changes };
+      this.message(changes.length ? "" : t("diff.noChanges"));
       this.setResultsBusy(false);
       this.renderScopes();
       this.renderResults();
@@ -767,14 +770,14 @@ class Sidebar {
   render() {
     const workflow = this.workflow;
     const native = workflow?.path;
-    this.activePath.textContent = workflow?.fullFilename || native?.split("/").at(-1) || (workflow ? "未命名工作流" : "无");
+    this.activePath.textContent = workflow?.fullFilename || native?.split("/").at(-1) || (workflow ? t("workspace.untitled") : t("common.none"));
     this.activePath.title = native || "";
     const association = this.association;
     this.path.textContent = this.file || this.unresolvedPath();
     this.path.title = this.file || "";
     this.bindButton.hidden = !this.config.workspace || !association || this.pinned || !workflow || !this.supported ||
       ["native", "workspace"].includes(association.source);
-    this.bindButton.textContent = association?.file ? "更改当前标签页关联" : "关联仓库文件";
+    this.bindButton.textContent = association?.file ? t("workspace.changeAssociation") : t("workspace.bindFile");
     this.openButton.disabled = !this.config.workspace || !this.supported;
     this.refreshButton.disabled = !this.supported;
     this.modified = workflow?.isModified;
@@ -788,18 +791,18 @@ class Sidebar {
       if (!control.hidden && !control.disabled) count++;
     }
     this.sourcePicker.hidden = count < 2;
-    this.sourceSummary.textContent = sources[mode].help;
+    this.sourceSummary.textContent = t(sources[mode].help);
     this.sourceSummary.hidden = !this.supported || (mode === "canvas" ? !workflow : !this.file);
     this.saveButton.hidden = !this.sameWorkflow || !workspaceFiles.managed(workflow, this.config.workspace);
     this.saveButton.disabled = this.saving === true;
-    this.saveButton.textContent = this.saving ? "正在保存…" : "保存到仓库";
+    this.saveButton.textContent = this.saving ? t("common.saving") : t("workspace.save");
     this.results.hidden = (!workflow && !this.pinned) || !this.supported;
   }
 
   unresolvedPath() {
     if (!this.workflow || !this.supported) return "—";
-    if (!this.association) return "正在识别…";
-    return this.config.workspace ? "未关联" : "尚未设置 Git 工作区";
+    if (!this.association) return t("workspace.resolving");
+    return this.config.workspace ? t("workspace.unassociated") : t("workspace.notConfigured");
   }
 
   settings() {
@@ -816,7 +819,7 @@ class Sidebar {
     const current = () => this.visible && workspace === this.config.workspace && equal(tab, this.tabKey);
     const files = await request("files", { workspace });
     if (!current()) return;
-    if (!files.length) throw new Error("工作区没有可选择的 JSON 文件。");
+    if (!files.length) throw new Error(t("workspace.noWorkflows"));
     const select = element("select");
     for (const file of files) {
       const option = element("option", "", file);
@@ -824,13 +827,13 @@ class Sidebar {
       select.append(option);
     }
     if (files.includes(this.file)) select.value = this.file;
-    formDialog(open ? "打开仓库工作流" : "关联当前标签页", "仓库相对路径", select,
-      open ? "打开工作流" : "关联", async (file) => {
-        if (!current()) throw new Error("工作区或标签页已切换，请重新选择。");
+    formDialog(open ? t("workspace.openRepositoryWorkflow") : t("workspace.associateTab"), t("workspace.relativePath"), select,
+      open ? t("workspace.openWorkflow") : t("workspace.associate"), async (file) => {
+        if (!current()) throw new Error(t("workspace.contextChanged"));
         if (open) {
           this.opening = true;
           try {
-            if (!await workspaceFiles.open(workspace, file, current)) throw new Error("ComfyUI 未能打开工作流。");
+            if (!await workspaceFiles.open(workspace, file, current)) throw new Error(t("workspace.openFailed"));
             this.mode = "auto";
             this.pinned = null;
             this.stamp = this.reviewKey;
@@ -844,7 +847,7 @@ class Sidebar {
           else await request("binding", {}, { workspace, file, native: workflow.path });
           await this.refresh();
         }
-      }, open ? "已打开的工作流会切换到原标签页。" : "指定当前标签页的比较对象。");
+      }, open ? t("workspace.switchToExistingTab") : t("workspace.associateTabHelp"));
   }
 
   async saveWorkspace() {
@@ -859,7 +862,7 @@ class Sidebar {
       if (current()) {
         if (this.mode === "canvas" && !workflow.isModified) this.mode = "auto";
         await this.refresh({ preserve: true });
-        if (current() && !this.status.classList.contains("cd-error")) this.message("已保存到仓库。");
+        if (current() && !this.status.classList.contains("cd-error")) this.message(t("workspace.saved"));
       }
     } finally {
       this.saving = false;
@@ -875,14 +878,14 @@ class Sidebar {
     const context = this.currentContext();
     const workflowState = workflow?.activeState;
     const click = this.click;
-    if (workflow?.isModified) throw new Error("请先保存当前工作流，或比较未保存的编辑。");
+    if (workflow?.isModified) throw new Error(t("workspace.saveOrCompare"));
     const { content, version } = await request("file", { workspace, file: this.file });
     if (!this.current(context) || this.click !== click || workflow?.activeState !== workflowState) return;
-    if (workflow.isModified) throw new Error("请先保存当前工作流，或比较未保存的编辑。");
-    const data = parseWorkflow(content, "已保存文件");
+    if (workflow.isModified) throw new Error(t("workspace.saveOrCompare"));
+    const data = parseWorkflow(content, t("version.disk"));
     this.canvas.clear();
     const loaded = await app.loadGraphData(data, true, true, workflow);
-    if (!loaded) throw new Error("ComfyUI 未能载入磁盘版本。");
+    if (!loaded) throw new Error(t("workspace.reloadFailed"));
     if (["native", "workspace"].includes(association)) workflow.originalContent = content;
     workspaceFiles.adoptDisk(workflow, workspace, version);
     if (this.current(context)) await this.refresh();
@@ -890,11 +893,11 @@ class Sidebar {
 
   renderScopes() {
     const { before, after, changes } = this.result;
-    const graphs = new Map([[ALL_GRAPHS, "主图和子图"], [ROOT, "仅主图"]]);
+    const graphs = new Map([[ALL_GRAPHS, t("diff.allGraphs")], [ROOT, t("diff.rootOnly")]]);
     for (const { graph } of changes) {
       if (!graphs.has(graph)) {
         const path = after.paths.get(graph) ?? before.paths.get(graph);
-        graphs.set(graph, `子图 · ${path.map(({ name }) => name).join(" › ")}`);
+        graphs.set(graph, t("diff.subgraphScope", { path: path.map(({ name }) => name).join(" › ") }));
       }
     }
     if (!graphs.has(this.scope)) this.scope = ALL_GRAPHS;
@@ -981,7 +984,7 @@ class Sidebar {
     if (!entries.includes(selectedChange)) this.clearSelection();
     if (!entries.length) {
       panel.tabIndex = 0;
-      if (result?.changes.length) panel.append(element("p", "cd-empty", "这个范围没有匹配的差异。"));
+      if (result?.changes.length) panel.append(element("p", "cd-empty", t("diff.noMatchingChanges")));
       return;
     }
     panel.removeAttribute("tabindex");
@@ -990,14 +993,14 @@ class Sidebar {
       const historical = !result.after.paths.has(graph);
       const version = historical ? result.before : result.after;
       const path = version.paths.get(graph) ?? [];
-      const heading = element("h3", "", "主图");
+      const heading = element("h3", "", t("common.rootGraph"));
       path.forEach((step, index) => {
         const parent = path[index - 1]?.graph ?? ROOT;
         const node = version.graphs.get(parent).nodes.get(step.id);
         heading.append(` › ${step.name} `, nodeIdButton(step.id, () =>
           this.locateReference({ graph: parent, node, historical, path: path.slice(0, index) })));
       });
-      heading.append(element("span", "", `${changes.length} 处`));
+      heading.append(element("span", "", t("diff.changeCount", { count: changes.length })));
       group.append(heading);
       for (const nodeChanges of Map.groupBy(changes, (change) => change.node).values()) {
         group.append(this.renderNodeChanges(nodeChanges, result, terms.length > 0));
@@ -1029,7 +1032,7 @@ class Sidebar {
     panel.tabIndex = 0;
     if (!issues.length) {
       const hasIssues = this.issues.length > 0;
-      const empty = element("p", "cd-issues-empty", hasIssues ? "没有匹配的问题。" : "ComfyUI 暂未报告问题。");
+      const empty = element("p", "cd-issues-empty", hasIssues ? t("issue.noMatches") : t("issue.empty"));
       if (!hasIssues) empty.prepend(icon("check-circle"));
       panel.append(empty);
       return;
@@ -1041,7 +1044,7 @@ class Sidebar {
       const group = element("details", "cd-issue-group");
       group.dataset.kind = id;
       const header = element("summary", "cd-issue-group-heading");
-      header.append(icon(category.icon), element("span", "", category.label),
+      header.append(icon(category.icon), element("span", "", t(category.label)),
         element("span", "cd-issue-count", entries.length), icon("chevron-right"));
       group.append(header);
       const addRows = () => {
@@ -1071,8 +1074,8 @@ class Sidebar {
     title.append(issue.group === "model" ? issueFile(issue.message) : element("strong", "", issue.message));
     if (issue.directory) title.append(element("span", "cd-issue-detail", issue.directory));
     const affected = issue.targets.filter(({ id }) => id).length;
-    const qualifier = affected === issue.targets.length ? "影响" : "已知";
-    const count = affected ? `${qualifier} ${affected} 个节点` : "节点数量未知";
+    const qualifier = affected === issue.targets.length ? "issue.affectedNodes" : "issue.knownNodes";
+    const count = affected ? t(qualifier, { count: affected }) : t("issue.unknownCount");
     header.append(title, element("span", "cd-issue-affected", count), icon("chevron-right"));
     entry.append(header);
     const addTargets = () => {
@@ -1080,12 +1083,12 @@ class Sidebar {
       for (const target of issue.matchingTargets ?? issue.targets) {
         const row = element("div", "cd-entry cd-issue cd-issue-target");
         const content = element("div", "cd-issue-content");
-        const name = target.node || (target.id ? "" : "未知节点");
+        const name = target.node || (target.id ? "" : t("issue.unknownNode"));
         content.append(issueNodeTitle(name, target.id, () => this.locateIssue(target.id)));
-        if (!target.id) content.append(element("span", "cd-issue-detail", "ComfyUI 未提供节点 ID"));
+        if (!target.id) content.append(element("span", "cd-issue-detail", t("issue.noNodeId")));
         if (target.details.length) content.append(element("code", "cd-issue-field", target.details.join(" · ")));
         row.append(content);
-        if (target.canLocate) row.append(this.rowLocator(`定位节点 #${target.id}`, () => this.locateIssue(target.id)));
+        if (target.canLocate) row.append(this.rowLocator(t("canvas.locateNode", { id: target.id }), () => this.locateIssue(target.id)));
         entry.append(row);
       }
     };
@@ -1116,14 +1119,14 @@ class Sidebar {
     }
     if (issue.detail && issue.group === "validation") {
       const detail = element("details", "cd-issue-detail");
-      detail.append(element("summary", "", "详情"), element("p", "cd-issue-message", issue.detail));
+      detail.append(element("summary", "", t("common.detail")), element("p", "cd-issue-message", issue.detail));
       content.append(detail);
     } else if (issue.detail) {
       content.append(element("code", "cd-issue-field", issue.detail));
     }
     row.append(content);
     if (issue.canLocate) {
-      row.append(this.rowLocator("定位到画布", () => this.locateIssue(issue.id)));
+      row.append(this.rowLocator(t("canvas.locate"), () => this.locateIssue(issue.id)));
     }
     return row;
   }
@@ -1175,8 +1178,8 @@ class Sidebar {
         this.locateReference({ graph: first.graph, node }), "cd-node-id"));
     }
     title.append(name, this.providerLabel(node));
-    const count = element("span", "cd-node-changes-count", `${changes.length} 处`);
-    count.title = `${changes.length} 处改动`;
+    const count = element("span", "cd-node-changes-count", t("diff.changeCount", { count: changes.length }));
+    count.title = t("diff.changeCountTitle", { count: changes.length });
     header.append(icon("chevron-right"), title, count);
     const children = element("div", "cd-node-change-children");
     group.append(header, children);
@@ -1205,7 +1208,7 @@ class Sidebar {
     const container = element("div", group ? "cd-entry cd-node-change" : "cd-entry");
     const control = button("", () => this.selectRow(row), "cd-change-select");
     const content = element("div", "cd-change");
-    const label = change.kind === "deleted" ? "在画布查看删除" : "定位到画布";
+    const label = change.kind === "deleted" ? t("canvas.locateDeletion") : t("canvas.locate");
     const select = () => {
       if (this.selected !== row) this.selectRow(row);
     };
@@ -1368,7 +1371,7 @@ class Sidebar {
       const note = await action();
       if (this.click !== click || !this.current(context) || this.result !== result) return;
       if (note !== undefined) {
-        if (this.selected) this.showLocateStatus(note || "已定位到画布。");
+        if (this.selected) this.showLocateStatus(note || t("canvas.located"));
         else this.message("");
       }
     } catch (error) {
@@ -1391,13 +1394,14 @@ app.registerExtension({
     const style = element("link");
     style.rel = "stylesheet";
     style.href = new URL("./comfydiff.css", import.meta.url).href;
+    setLocale(app.extensionManager.setting.get("Comfy.Locale"));
     document.head.append(style);
     let sidebar;
     app.extensionManager.registerSidebarTab({
       id: TAB,
       icon: "pi pi-code",
-      title: "工作流差异",
-      tooltip: "查看工作流差异和 Git 状态",
+      title: t("diff.title"),
+      tooltip: t("diff.tabTooltip"),
       type: "custom",
       render(container) {
         container.classList.add("comfydiff-mount");

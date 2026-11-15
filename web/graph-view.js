@@ -1,4 +1,5 @@
 import { nodeName, ROOT } from "./diff.js";
+import { t } from "./i18n.js";
 
 export function bounds(node) {
   const { pos, size } = node.raw;
@@ -56,7 +57,7 @@ export function element(tag, className, content) {
 export function nodeIdButton(id, locate, className = "") {
   const button = element("button", `cd-node-ref ${className}`.trimEnd(), `#${id}`);
   button.type = "button";
-  button.title = `定位节点 #${id}`;
+  button.title = t("canvas.locateNode", { id });
   button.setAttribute("aria-label", button.title);
   button.onclick = (event) => {
     event.stopPropagation();
@@ -68,15 +69,15 @@ export function nodeIdButton(id, locate, className = "") {
 export function openReadonly(snapshot, path, focus, label, historical) {
   const dialog = element("dialog", "comfydiff-readonly");
   const toolbar = element("header", "cd-readonly-header");
-  const title = element("strong", "", label + " · 只读");
-  const close = element("button", "", "返回画布");
+  const title = element("strong", "", t("canvas.readOnly", { label }));
+  const close = element("button", "", t("canvas.returnToCanvas"));
   close.type = "button";
   close.onclick = () => dialog.close();
   toolbar.append(title, close);
   const crumbs = element("nav", "cd-crumbs");
-  crumbs.setAttribute("aria-label", "工作流路径");
+  crumbs.setAttribute("aria-label", t("canvas.workflowPath"));
   const viewport = element("div", "cd-readonly-viewport");
-  viewport.setAttribute("aria-label", "只读工作流画布");
+  viewport.setAttribute("aria-label", t("canvas.readOnlyCanvas"));
   const canvas = element("canvas");
   const layer = element("div", "cd-readonly-nodes");
   viewport.append(canvas, layer);
@@ -160,7 +161,7 @@ export function openReadonly(snapshot, path, focus, label, historical) {
         const enter = element("button", "cd-readonly-enter", nodeName(node, snapshot));
         enter.type = "button";
         enter.onclick = () => {
-          current.push({ graph: node.type, id: node.id, name: node.title || child.name || "子图" });
+          current.push({ graph: node.type, id: node.id, name: node.title || child.name || t("common.subgraph") });
           selected = undefined;
           navigate();
         };

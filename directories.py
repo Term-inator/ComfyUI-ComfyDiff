@@ -24,7 +24,7 @@ def list_directory(path):
 
     directory = Path(path)
     if not directory.is_absolute() or (os.name == "nt" and len(directory.drive) != 2):
-        raise RepositoryError("请选择服务器上的文件夹。")
+        raise RepositoryError("error.chooseServerFolder")
     directory = Path(os.path.abspath(directory))
     folders = []
     try:
@@ -36,9 +36,9 @@ def list_directory(path):
                     if entry.is_dir():
                         folders.append({"name": entry.name, "path": entry.path})
     except (FileNotFoundError, NotADirectoryError) as error:
-        raise RepositoryError("该文件夹已移动、删除或不可用。") from error
+        raise RepositoryError("error.folderUnavailable") from error
     except OSError as error:
-        raise RepositoryError("无法读取该文件夹。") from error
+        raise RepositoryError("error.readFolder") from error
 
     parent = str(directory.parent) if directory != directory.parent else ("" if os.name == "nt" else None)
     return {"path": str(directory), "parent": parent, "folders": sorted(folders, key=lambda item: item["name"].casefold())}

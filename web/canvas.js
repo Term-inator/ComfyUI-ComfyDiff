@@ -2,6 +2,7 @@ import { ROOT, compatibleWidgetSchema, equal, snapshot, validateChange } from ".
 import { bounds, edgePath, enclosing, openReadonly, portPosition, strokeMark } from "./graph-view.js";
 import { canvasPoint, createGhostLayer } from "./ghost-node.js";
 import { resolveExecutionNode } from "./issues.js";
+import { t } from "./i18n.js";
 
 export function restoresNamedWidgets(app) {
   return app.extensionManager.setting.get("Comfy.Workflow.NamedValuesRestore") === true;
@@ -192,7 +193,7 @@ function openGraph(canvas, root, { graph, route }) {
   if (start < 0 && previous !== root) canvas.setGraph(root);
   for (const step of route.slice(Math.max(start, 0))) {
     canvas.openSubgraph(step.graph, step.node);
-    if (canvas.graph !== step.graph) throw new Error("ComfyUI 未能进入目标子图。");
+    if (canvas.graph !== step.graph) throw new Error(t("canvas.subgraphOpenFailed"));
   }
   if (!route.length) canvas.setGraph(graph);
 }
@@ -213,7 +214,7 @@ export class CanvasReview {
 
   async locateIssue(id) {
     const target = resolveExecutionNode(this.app.rootGraph, id);
-    if (!target) throw new Error("当前画布中找不到该问题对应的节点。");
+    if (!target) throw new Error(t("canvas.issueNodeMissing"));
     await this.navigate(target, () => this.focusNode(target.node));
   }
 
@@ -261,9 +262,9 @@ export class CanvasReview {
       }
       this.operation = undefined;
       this.showReadonly(before, path ?? oldPath, { node: node.id }, beforeLabel, true);
-      return "已定位到旧版本节点。";
+      return t("canvas.locatedOldNode");
     }
-    throw new Error(`当前画布中找不到对应的节点 #${node.id}。`);
+    throw new Error(t("canvas.nodeIdMissing", { id: node.id }));
   }
 
   focusGhost(canvas, card) {
@@ -277,7 +278,7 @@ export class CanvasReview {
   previewNode({ graph, node, path, historical }, result) {
     const snapshot = historical ? result.before : result.after;
     const targetPath = path ?? snapshot.paths.get(graph);
-    if (!targetPath) throw new Error("该版本中找不到节点所在的子图。");
+    if (!targetPath) throw new Error(t("canvas.nodeSubgraphMissing"));
     this.showReadonly(snapshot, targetPath, { node: node.id }, historical ? result.beforeLabel : result.afterLabel, historical);
     return "";
   }
@@ -286,7 +287,7 @@ export class CanvasReview {
     const historical = change.kind === "deleted" || !result.after.paths.has(change.graph);
     const snapshot = historical ? result.before : result.after;
     const path = snapshot.paths.get(change.graph);
-    if (!path) throw new Error("该版本中找不到对应的子图。");
+    if (!path) throw new Error(t("canvas.subgraphMissing"));
     const edge = historical ? change.from?.edge : change.to?.edge;
     this.showReadonly(snapshot, path, { node: change.node, edge }, historical ? result.beforeLabel : result.afterLabel, historical);
     return "";
@@ -366,7 +367,7 @@ export class CanvasReview {
         const retained = after.graphs.get(candidateKey)?.nodes.get(step.id);
         const current = nodeIn(parent.graph, step.id);
         if (current?.type !== retained?.type) {
-          throw new Error("当前画布中的子图入口与比较结果不同。");
+          throw new Error(t("canvas.subgraphChanged"));
         }
         ghost = before.graphs.get(candidateKey).nodes.get(step.id);
         graphKey = candidateKey;
@@ -375,7 +376,7 @@ export class CanvasReview {
         break;
       }
     }
-    if (!resolved) throw new Error("当前画布中找不到对应的子图路径。");
+    if (!resolved) throw new Error(t("canvas.subgraphPathMissing"));
     const currentGraph = liveSnapshot(app).graphs.get(graphKey);
     if (!removedBranch) {
       const validation = validateChange(change, currentGraph);
@@ -384,7 +385,7 @@ export class CanvasReview {
       if (change.kind === "deleted") {
         ghost = change.before;
         if (before.graphs.has(ghost.type)) removedBranch = [...oldPath, {
-          id: ghost.id, graph: ghost.type, name: ghost.title || before.graphs.get(ghost.type).name || "子图",
+          id: ghost.id, graph: ghost.type, name: ghost.title || before.graphs.get(ghost.type).name || t("common.subgraph"),
         }];
       }
     }
@@ -415,7 +416,7 @@ export class CanvasReview {
     for (const old of historicalNodes.values()) {
       const child = before.graphs.get(old.type);
       const branch = old === ghost && removedBranch || (child && [...(before.paths.get(graphKey) ?? []), {
-        id: old.id, graph: old.type, name: old.title || child.name || "子图",
+        id: old.id, graph: old.type, name: old.title || child.name || t("common.subgraph"),
       }]);
       const card = ghosts.add(old, before, {
         selected: old === ghost,
@@ -553,11 +554,11 @@ export class CanvasReview {
       }
       if (openOld && removedBranch) this.showReadonly(result.before, removedBranch, focus, result.beforeLabel, true);
       const host = isParameter && target && nodeElement(canvas, node.id);
-      if (change.kind === "parameter" && !isParameter) return "已定位到节点，当前版本没有这个参数。";
+      if (change.kind === "parameter" && !isParameter) return t("canvas.locatedWithoutParameter");
       if (isParameter && (!change.name || !widgetElement(host, change.name))) {
-        if (!change.name) return "已定位到节点，无法可靠匹配参数控件。";
-        if (target?.flags.collapsed) return "已定位到节点。展开节点后可查看高亮的参数。";
-        return "已定位到节点，画布上没有可高亮的参数控件。";
+        if (!change.name) return t("canvas.locatedAmbiguousParameter");
+        if (target?.flags.collapsed) return t("canvas.locatedCollapsed");
+        return t("canvas.locatedWithoutWidget");
       }
       return "";
     });

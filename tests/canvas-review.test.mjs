@@ -45,7 +45,7 @@ test("a removed subgraph can be previewed after its entry is replaced at the sam
   assert.deepEqual(preview.focus, { node: "7" });
 
   const stale = new CanvasReview(canvasApp({ nodes: [{ id: 1, type: branch }] }));
-  assert.throws(() => stale.prepare(change, { before, after }), /入口与比较结果不同/);
+  assert.throws(() => stale.prepare(change, { before, after }), /subgraph entry on the canvas differs/);
 });
 
 test("the selected highlight follows a widget edit before the workflow tracker captures it", () => {

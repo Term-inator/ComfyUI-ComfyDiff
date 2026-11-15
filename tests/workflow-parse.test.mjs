@@ -9,9 +9,9 @@ test("invalid workflow structures report the side that could not be read", () =>
     '{"nodes":[],"links":{}}',
     '{"nodes":[],"definitions":{"subgraphs":[null]}}',
   ];
-  for (const source of ["HEAD", "工作区"]) {
+  for (const source of ["Last commit", "Saved file"]) {
     for (const text of invalid) {
-      assert.throws(() => parseWorkflow(text, source), new RegExp(`${source}的文件不是有效`));
+      assert.throws(() => parseWorkflow(text, source), { message: `${source}: not a valid editor workflow JSON file.` });
     }
   }
 });

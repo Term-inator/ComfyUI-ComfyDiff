@@ -42,7 +42,7 @@ test("Workflow JSON 0.4 links survive files without slot metadata", () => {
   const after = workflow(true);
   const added = compare(before, after);
   assert.deepEqual(added.map(({ kind, field, from, to }) =>
-    [kind, field, from, to?.edge.source.id]), [["input", "输入 1", undefined, "1"]]);
+    [kind, field, from, to?.edge.source.id]), [["input", "Input 1", undefined, "1"]]);
   assert.equal(validateChange(added[0], workflow(true, true).graphs.get("")).source.edge.source.id, "1");
   assert.deepEqual(compare(after, workflow(true, true)), []);
   assert.deepEqual(compare(after, before).map(({ from, to }) => [from?.kind, to]), [["link", undefined]]);

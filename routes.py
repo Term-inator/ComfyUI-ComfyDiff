@@ -41,20 +41,23 @@ def register_routes(server):
     def configured(settings, expected):
         root = settings["workspace"]
         if not root or expected != root:
-            raise RepositoryError("Git 工作区设置已变更，请刷新后重试。")
+            raise RepositoryError("error.workspaceChanged")
         return root
 
     async def handle(request):
         try:
             return web.json_response(await dispatch(request), headers={"Cache-Control": "no-store"})
-        except RepositoryChanged as error:
-            return web.json_response({"error": str(error)}, status=409)
         except RepositoryError as error:
-            return web.json_response({"error": str(error)}, status=400)
+            body = {"error": error.code}
+            if error.source:
+                body["source"] = error.source
+            if error.detail:
+                body["detail"] = error.detail
+            return web.json_response(body, status=409 if isinstance(error, RepositoryChanged) else 400)
         except (KeyError, TypeError, ValueError):
-            return web.json_response({"error": "无法读取请求或 ComfyDiff 设置。"}, status=400)
+            return web.json_response({"error": "error.invalidRequest"}, status=400)
         except OSError:
-            return web.json_response({"error": "无法读取或保存 ComfyDiff 设置。"}, status=500)
+            return web.json_response({"error": "error.settingsIo"}, status=500)
 
     async def dispatch(request):
         path = settings_path(request)
@@ -73,7 +76,7 @@ def register_routes(server):
                     await asyncio.to_thread(repo.disk, relative)
                     native = body["native"]
                     if not isinstance(native, str) or not native.startswith("workflows/"):
-                        raise RepositoryError("该标签页尚无可保存的工作流路径。")
+                        raise RepositoryError("error.noTabPath")
                     workflow_path(native)
                     settings["bindings"].setdefault(root, {})[native] = relative
                 elif operation in ("stage", "unstage", "commit", "save"):
@@ -84,12 +87,12 @@ def register_routes(server):
                     if operation == "commit":
                         message = body["message"]
                         if not isinstance(message, str) or not message.strip() or "\0" in message:
-                            raise RepositoryError("请输入提交说明。")
+                            raise RepositoryError("error.enterCommitMessage")
                         return await asyncio.to_thread(repo.commit, message.strip(), body["expected"])
                     content = body["content"]
                     data = json.loads(content)
                     if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
-                        raise RepositoryError("请选择有效的工作流。")
+                        raise RepositoryError("error.invalidWorkflow")
                     version = await asyncio.to_thread(repo.save_workflow, body["file"], content.encode("utf-8"), body["expected"])
                     return {"version": version}
                 else:
@@ -131,11 +134,11 @@ def register_routes(server):
                     break
             if native is None:
                 native = repo.native_path(relative, native_root)
-            return {"content": repo.decode(content, "已保存文件"), "version": fingerprint(content), "native": native}
+            return {"content": repo.decode(content, "version.disk"), "version": fingerprint(content), "native": native}
         if operation == "compare":
             mode = query["mode"]
             if mode not in ("auto", "staged", "changed"):
-                raise RepositoryError("请选择比较来源。")
+                raise RepositoryError("error.chooseSource")
             return await asyncio.to_thread(repo.compare, query["file"], mode, query.get("known"))
         raise web.HTTPNotFound()
 

@@ -8,15 +8,21 @@ import { NodeIdentity } from "./node-identity.js";
 import { createSidebarSplit } from "./sidebar-split.js";
 import { reconcileAssociation } from "./workflow-association.js";
 import { openWorkspacePicker } from "./workspace-picker.js";
+import { SourceControl } from "./source-control.js";
+import { WorkspaceFiles } from "./workspace-files.js";
 
 const TAB = "comfydiff";
-const fileByInstance = new Map();
 const nodeIdentity = new NodeIdentity();
 const pathLabel = (path) => ["主图", ...path.map((step) => `${step.name} #${step.id}`)].join(" › ");
 const errorText = (error) => error instanceof Error ? error.message : String(error);
 const modeNames = new Map([[0, "始终"], [1, "事件时"], [2, "停用"], [3, "触发时"], [4, "旁路"]]);
 const ALL_GRAPHS = "*";
 const ISSUES = "issues";
+const sources = {
+  changed: { label: "未暂存", before: "暂存版本", after: "已保存文件", help: "已经保存到文件，但还没暂存的改动。" },
+  staged: { label: "已暂存", before: "上次提交", after: "暂存版本", help: "下次提交会包含这些改动。" },
+  canvas: { label: "未保存", before: "打开或保存时", after: "当前画布", help: "此标签页上次打开或保存后的编辑。" },
+};
 const changeCategories = [
   { id: "all", label: "全部" },
   { id: "fields", label: "参数", title: "参数与模式", kinds: ["parameter", "mode"] },
@@ -67,7 +73,12 @@ function issueNodeTitle(name, id, locate) {
 }
 
 async function request(operation, params = {}, body) {
-  const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value != null));
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) {
+      for (const item of value) query.append(key, item);
+    } else if (value != null) query.set(key, value);
+  }
   const response = await api.fetchApi(`/comfydiff/${operation}?${query}`, body ? {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   } : { cache: "no-store" });
@@ -75,6 +86,8 @@ async function request(operation, params = {}, body) {
   if (!response.ok) throw new Error(data.error || "ComfyDiff 请求失败。");
   return data;
 }
+
+const workspaceFiles = new WorkspaceFiles(app, request, () => api.user);
 
 function button(label, action, className) {
   const control = element("button", className, label);
@@ -233,7 +246,7 @@ class Sidebar {
   constructor(root) {
     this.root = root;
     this.canvas = new CanvasReview(app, root);
-    this.mode = "disk";
+    this.mode = "auto";
     this.config = {};
     this.sequence = 0;
     this.reading = false;
@@ -247,6 +260,9 @@ class Sidebar {
     this.issueItemOpen = new Set();
 
     const heading = element("header", "cd-header");
+    const headingTitle = element("div", "cd-header-title");
+    this.backButton = iconButton("arrow-left", "返回源代码管理", () => this.showSourceControl());
+    headingTitle.append(this.backButton, element("h2", "", "工作流差异"));
     const headerActions = element("div", "cd-header-actions");
     this.refreshButton = iconButton("refresh", "刷新比较", () => this.refresh({ preserve: true }));
     const menu = element("div", "cd-menu");
@@ -256,19 +272,19 @@ class Sidebar {
     this.menu = menu;
     const more = iconButton("ellipsis-h", "更多比较选项");
     more.popoverTargetElement = menu;
-    this.openButton = button("在新标签页打开仓库文件", () => {
+    this.openButton = button("打开仓库工作流", () => {
       menu.hidePopover();
       more.focus({ preventScroll: true });
       this.safe(() => this.chooseFile(true));
     });
-    this.openButton.title = "从 Git 工作区读取文件，并在 ComfyUI 新标签页打开。";
+    this.openButton.title = "打开仓库工作流，已打开时切换到原标签页。";
     menu.append(this.openButton, button("Git 工作区设置", () => {
       menu.hidePopover();
       more.focus({ preventScroll: true });
       this.settings();
     }));
     headerActions.append(this.refreshButton, more, menu);
-    heading.append(element("h2", "", "工作流差异"), headerActions);
+    heading.append(headingTitle, headerActions);
 
     const comparison = element("div", "cd-comparison");
     const active = element("p", "cd-path");
@@ -279,21 +295,19 @@ class Sidebar {
     this.bindButton = button("关联仓库文件", () => this.safe(() => this.chooseFile(false)));
     this.bindButton.title = "只设置当前标签页的比较对象。";
     paths.append(element("span", "", "仓库文件"), this.path);
-    const baseline = element("p", "cd-baseline");
-    this.baseline = baseline;
-    this.provenance = element("code");
-    baseline.append(element("span", "", "基准版本"), this.provenance);
-    const sources = element("div", "cd-sources");
-    sources.setAttribute("role", "group");
-    sources.setAttribute("aria-label", "与基准版本比较的对象");
-    this.diskButton = button("磁盘文件", () => this.setMode("disk"));
-    this.diskButton.title = "与 Git 工作区里已保存的文件比较。";
-    this.diskButton.prepend(icon("database"));
-    this.canvasButton = button("当前画布", () => this.setMode("canvas"));
-    this.canvasButton.title = "与当前标签页里的工作流比较，包含未保存修改。";
-    this.canvasButton.prepend(icon("sitemap"));
-    sources.append(this.diskButton, this.canvasButton);
-    comparison.append(active, paths, this.bindButton, baseline, sources);
+    this.sourcePicker = element("div", "cd-sources");
+    this.sourcePicker.setAttribute("role", "group");
+    this.sourcePicker.setAttribute("aria-label", "比较来源");
+    this.sourceButtons = new Map(Object.entries(sources).map(([mode, source]) => {
+      const control = button(source.label, () => this.safe(() => this.selectSource(mode)));
+      control.title = source.help;
+      this.sourcePicker.append(control);
+      return [mode, control];
+    }));
+    this.canvasButton = this.sourceButtons.get("canvas");
+    this.sourceSummary = element("p", "cd-source-summary");
+    this.saveButton = button("保存到仓库", () => this.safe(() => this.saveWorkspace()));
+    comparison.append(active, paths, this.bindButton, this.sourcePicker, this.sourceSummary, this.saveButton);
     this.status = element("p", "cd-status");
     this.status.setAttribute("role", "status");
     const controls = element("div", "cd-review-header");
@@ -371,7 +385,14 @@ class Sidebar {
     this.split.hidden = true;
     panes.append(this.list, this.split, this.inspector);
     this.results.append(panes);
-    root.replaceChildren(controls, this.results);
+    this.diff = element("section", "cd-diff");
+    this.diff.append(controls, this.results);
+    this.scm = new SourceControl(request, {
+      settings: () => this.settings(),
+      open: (row, mode) => this.openChange(row, mode),
+      currentWorkflow: () => this.showDiff(true),
+    });
+    root.replaceChildren(this.diff, this.scm.root);
     this.render();
   }
 
@@ -390,15 +411,14 @@ class Sidebar {
 
   get association() {
     if (!equal(this.configTab, this.tabKey)) return null;
-    const workflow = this.workflow;
-    return (workflow?.isTemporary && fileByInstance.get(this.bindingKey(workflow))) || this.config;
+    return (this.workflow?.isTemporary && workspaceFiles.association(this.workflow, this.config.workspace)) || this.config;
   }
 
-  get file() { return this.association?.file; }
+  get file() { return this.pinned?.file ?? this.association?.file; }
 
-  bindingKey(workflow) {
-    return JSON.stringify([api.user, this.config.workspace, workflow?.instanceId]);
-  }
+  get sameWorkflow() { return !!this.workflow && (!this.pinned || this.pinned.file === this.association?.file); }
+
+  get comparisonMode() { return this.mode === "auto" ? this.result?.mode ?? "changed" : this.mode; }
 
   currentContext() {
     return [this.sequence, ...this.reviewKey, app.rootGraphOrUndefined];
@@ -429,7 +449,6 @@ class Sidebar {
     this.clearSelection();
     this.result = null;
     this.clearResults();
-    this.baseline.hidden = true;
   }
 
   clearResults() {
@@ -457,7 +476,7 @@ class Sidebar {
   showLocateStatus(message = "", error = false, canRecover = true) {
     this.locateStatus.textContent = message;
     this.locateStatus.classList.toggle("cd-error", error);
-    const diskMismatch = error && canRecover && this.mode === "disk";
+    const diskMismatch = error && canRecover && this.comparisonMode === "changed" && this.sameWorkflow;
     this.reloadButton.hidden = !diskMismatch || !!this.workflow?.isModified;
     this.useCanvasButton.hidden = !diskMismatch;
   }
@@ -499,16 +518,28 @@ class Sidebar {
 
   tick() {
     if (!this.visible) {
-      if (this.wasVisible) this.reset();
+      if (this.wasVisible) {
+        this.reset();
+        this.scmTab = null;
+      }
       this.wasVisible = false;
       return;
     }
     const stamp = this.reviewKey;
     const tabChanged = !equal(stamp, this.stamp);
+    if (this.opening) return;
     if (tabChanged) {
       this.issueSearch.value = "";
       this.issueGroupOpen.clear();
       this.issueItemOpen.clear();
+    }
+    if (tabChanged && this.stamp) {
+      this.mode = "auto";
+      this.pinned = null;
+    }
+    if ((!this.wasVisible || tabChanged) && !equal(this.scmTab, this.tabKey)) {
+      this.diff.hidden = false;
+      this.scm.root.hidden = true;
     }
     if (!this.wasVisible || tabChanged || this.graph !== app.rootGraphOrUndefined) {
       this.issueStatus.textContent = "";
@@ -516,11 +547,83 @@ class Sidebar {
       this.stamp = stamp;
       this.graph = app.rootGraphOrUndefined;
       this.refresh();
-    } else if (this.mode === "disk" && this.file && !this.reading && Date.now() >= this.nextRead) {
+    } else if (!this.diff.hidden && !this.reading && (
+      (this.mode !== "canvas" && this.file && Date.now() >= this.nextRead) ||
+      (this.mode === "canvas" && this.canvasBase !== this.workflow?.originalContent)
+    )) {
       this.read(false);
+    }
+    if (!this.scm.root.hidden) {
+      this.configureSourceControl();
+      this.scm.tick();
+    } else if (this.modified !== this.workflow?.isModified) {
+      this.render();
     }
     this.canvas.syncHighlight();
     this.updateIssues(tabChanged);
+  }
+
+  configureSourceControl() {
+    const workspace = this.config.workspace ?? "";
+    const unsaved = workspaceFiles.store.openWorkflows.filter((workflow) =>
+      this.supported && workflow.isModified && (workflow.originalContent || workflow.initialState)
+    ).map((workflow) => ({
+      workflow, file: workspaceFiles.managed(workflow, workspace)?.file ?? workflow.path.replace(/^workflows\//, ""),
+    }));
+    this.scm.configure(workspace, unsaved, !!this.workflow);
+  }
+
+  showSourceControl() {
+    this.scmTab = this.tabKey;
+    this.sequence++;
+    this.canvas.clear();
+    this.diff.hidden = true;
+    this.configureSourceControl();
+    this.scm.show();
+    this.scm.currentButton.focus();
+    if (!equal(this.configTab, this.tabKey)) this.refresh();
+  }
+
+  showDiff(follow = false) {
+    if (follow && !this.sameWorkflow) {
+      this.mode = "auto";
+      this.pinned = null;
+    }
+    this.scmTab = null;
+    this.diff.hidden = false;
+    this.scm.root.hidden = true;
+    this.backButton.focus({ preventScroll: true });
+    return this.refresh({ preserve: true });
+  }
+
+  async openChange(row, mode) {
+    if (!this.supported) throw new Error("请在 ComfyUI 设置中启用 Nodes 2.0。");
+    const workspace = this.config.workspace;
+    const previous = this.tabKey;
+    const user = api.user;
+    const current = () => this.visible && !this.scm.root.hidden && this.config.workspace === workspace && user === api.user;
+    const beforeOpen = () => current() && equal(this.tabKey, previous);
+    this.opening = true;
+    try {
+      let opened = true;
+      if (mode === "canvas") opened = await workspaceFiles.activate(row.workflow, beforeOpen);
+      if (mode === "changed" && row.code !== "D") opened = await workspaceFiles.open(workspace, row.file, beforeOpen);
+      if (!opened && beforeOpen()) throw new Error("ComfyUI 未能打开工作流。");
+      if (!opened || !current()) return;
+      this.mode = mode;
+      this.pinned = mode === "canvas" ? null : { workspace, file: row.file };
+      if (this.category === ISSUES) this.category = "all";
+      this.stamp = this.reviewKey;
+      this.graph = app.rootGraphOrUndefined;
+      await this.showDiff();
+    } finally {
+      this.opening = false;
+    }
+  }
+
+  selectSource(mode) {
+    if (mode === "canvas") this.pinned = null;
+    return this.setMode(mode);
   }
 
   setMode(mode, locate = false) {
@@ -561,7 +664,6 @@ class Sidebar {
         this.message("请在 ComfyUI 设置中启用 Nodes 2.0。");
         return;
       }
-      const currentCanvas = this.mode === "canvas" && root ? liveSnapshot(app) : null;
       const settings = await request("settings", {
         native: workflow?.path,
         temporary: workflow?.isTemporary ? "1" : null,
@@ -569,6 +671,10 @@ class Sidebar {
       if (!stillCurrent()) return;
       const previous = equal(this.configTab, this.tabKey) ? this.config : null;
       const config = reconcileAssociation(settings, previous);
+      if (this.pinned && this.pinned.workspace !== config.workspace) {
+        this.pinned = null;
+        this.mode = "auto";
+      }
       if (config.workspace !== this.config.workspace || config.file !== this.config.file) {
         this.clearSelection();
         this.result = null;
@@ -577,30 +683,49 @@ class Sidebar {
       this.config = config;
       this.configTab = this.tabKey;
       this.render();
-      if (!config.workspace) {
-        this.message("请在设置中选择 Git 工作区目录。");
-        return;
-      }
-      if (!workflow || !root) {
-        this.message("打开一个工作流后即可比较。");
-        return;
-      }
       const file = this.file;
-      if (!file) {
-        this.message("无法自动识别仓库路径，请为当前标签页关联文件。");
-        return;
-      }
-      const data = await request("compare", {
-        workspace: config.workspace, file, mode: this.mode, known: force ? null : this.result?.token,
-      });
-      if (!stillCurrent()) return;
-      if (data.unchanged) return;
-      const options = { restoreNamed: restoresNamedWidgets(app) };
-      const before = snapshot(data.before === null ? null : parseWorkflow(data.before, "HEAD"), options);
-      const after = currentCanvas ?? snapshot(parseWorkflow(data.after, "工作区"), options);
-      const changes = compare(before, after, (graph, node) => namesOnCanvas(app, graph, node));
-      const filterContext = [api.user, workflow.instanceId, config.workspace, file];
+      const filterContext = [api.user, workflow?.instanceId, config.workspace, file];
       const sameFile = equal(this.filterContext, filterContext);
+      const options = { restoreNamed: restoresNamedWidgets(app) };
+      let data, before, after;
+      if (this.mode === "canvas") {
+        if (!workflow || !root) {
+          this.message("打开一个工作流后即可比较。");
+          return;
+        }
+        const saved = workspaceFiles.baseline(workflow);
+        this.canvasBase = workflow.originalContent;
+        if (!saved) {
+          this.message("找不到该工作流打开或保存时的版本。");
+          return;
+        }
+        const gitStatus = this.scm.workspace === config.workspace ? this.scm.state : null;
+        const staged = gitStatus ? gitStatus.staged.some((row) => row.file === file) : sameFile && !!this.result?.staged;
+        data = { mode: "canvas", staged };
+        before = snapshot(saved, options);
+        after = liveSnapshot(app);
+      } else {
+        if (!config.workspace) {
+          this.message("请在设置中选择 Git 工作区目录。");
+          return;
+        }
+        if (!workflow && !this.pinned) {
+          this.message("打开一个工作流后即可比较。");
+          return;
+        }
+        if (!file) {
+          this.message("无法自动识别仓库路径，请为当前标签页关联文件。");
+          return;
+        }
+        data = await request("compare", { workspace: config.workspace, file, mode: this.mode, known: force ? null : this.result?.token });
+        if (!stillCurrent()) return;
+        if (data.unchanged) return;
+        const source = sources[data.mode];
+        before = snapshot(data.before === null ? null : parseWorkflow(data.before, source.before), options);
+        after = snapshot(data.after === null ? null : parseWorkflow(data.after, source.after), options);
+      }
+      const changes = compare(before, after, (graph, node) =>
+        root && this.sameWorkflow ? namesOnCanvas(app, graph, node) : null);
       const position = sameFile ? this.reviewPosition() : null;
       if (!sameFile) {
         this.scope = ALL_GRAPHS;
@@ -611,7 +736,8 @@ class Sidebar {
         this.filterContext = filterContext;
       }
       this.clearSelection();
-      this.result = { ...data, before, after, changes };
+      this.result = { mode: data.mode, staged: data.staged, token: data.token, removed: data.after === null,
+        beforeLabel: sources[data.mode].before, afterLabel: sources[data.mode].after, before, after, changes };
       this.message(changes.length ? "" : "没有检测到工作流差异。");
       this.setResultsBusy(false);
       this.renderScopes();
@@ -644,19 +770,30 @@ class Sidebar {
     this.activePath.textContent = workflow?.fullFilename || native?.split("/").at(-1) || (workflow ? "未命名工作流" : "无");
     this.activePath.title = native || "";
     const association = this.association;
-    this.path.textContent = association?.file || this.unresolvedPath();
-    this.path.title = association?.file || "";
-    this.bindButton.hidden = !this.config.workspace || !association || association.source === "native" || !workflow || !this.supported;
+    this.path.textContent = this.file || this.unresolvedPath();
+    this.path.title = this.file || "";
+    this.bindButton.hidden = !this.config.workspace || !association || this.pinned || !workflow || !this.supported ||
+      ["native", "workspace"].includes(association.source);
     this.bindButton.textContent = association?.file ? "更改当前标签页关联" : "关联仓库文件";
     this.openButton.disabled = !this.config.workspace || !this.supported;
     this.refreshButton.disabled = !this.supported;
-    this.diskButton.disabled = this.canvasButton.disabled = !this.file || !this.supported;
-    this.diskButton.setAttribute("aria-pressed", String(this.mode === "disk"));
-    this.canvasButton.setAttribute("aria-pressed", String(this.mode === "canvas"));
-    const head = this.result?.head.slice(0, 7);
-    this.results.hidden = !workflow || !this.supported;
-    this.baseline.hidden = !head;
-    this.provenance.textContent = head ? `HEAD ${head}${this.result.before.graphs.size ? "" : " · 新文件"}` : "";
+    this.modified = workflow?.isModified;
+    const mode = this.comparisonMode;
+    let count = 0;
+    for (const [source, control] of this.sourceButtons) {
+      const canvas = source === "canvas";
+      control.disabled = !this.supported || (canvas ? !workflow : !this.file);
+      control.hidden = source !== mode && (canvas ? !this.modified : source === "staged" && !this.result?.staged);
+      control.setAttribute("aria-pressed", String(mode === source));
+      if (!control.hidden && !control.disabled) count++;
+    }
+    this.sourcePicker.hidden = count < 2;
+    this.sourceSummary.textContent = sources[mode].help;
+    this.sourceSummary.hidden = !this.supported || (mode === "canvas" ? !workflow : !this.file);
+    this.saveButton.hidden = !this.sameWorkflow || !workspaceFiles.managed(workflow, this.config.workspace);
+    this.saveButton.disabled = this.saving === true;
+    this.saveButton.textContent = this.saving ? "正在保存…" : "保存到仓库";
+    this.results.hidden = (!workflow && !this.pinned) || !this.supported;
   }
 
   unresolvedPath() {
@@ -675,7 +812,6 @@ class Sidebar {
   async chooseFile(open) {
     const workspace = this.config.workspace;
     const workflow = this.workflow;
-    const key = this.bindingKey(workflow);
     const tab = this.tabKey;
     const current = () => this.visible && workspace === this.config.workspace && equal(tab, this.tabKey);
     const files = await request("files", { workspace });
@@ -688,47 +824,68 @@ class Sidebar {
       select.append(option);
     }
     if (files.includes(this.file)) select.value = this.file;
-    formDialog(open ? "在新标签页打开仓库文件" : "关联当前标签页", "仓库相对路径", select,
-      open ? "在新标签页打开" : "关联", async (file) => {
-        if (!current()) {
-          throw new Error("工作区或标签页已切换，请重新选择。");
-        }
+    formDialog(open ? "打开仓库工作流" : "关联当前标签页", "仓库相对路径", select,
+      open ? "打开工作流" : "关联", async (file) => {
+        if (!current()) throw new Error("工作区或标签页已切换，请重新选择。");
         if (open) {
-          const { content } = await request("file", { workspace, file });
-          if (!current()) {
-            throw new Error("工作区或标签页已切换，请重新选择。");
+          this.opening = true;
+          try {
+            if (!await workspaceFiles.open(workspace, file, current)) throw new Error("ComfyUI 未能打开工作流。");
+            this.mode = "auto";
+            this.pinned = null;
+            this.stamp = this.reviewKey;
+            this.graph = app.rootGraphOrUndefined;
+            await this.showDiff();
+          } finally {
+            this.opening = false;
           }
-          const data = parseWorkflow(content, "工作区");
-          const opened = app.extensionManager.workflow.createNewTemporary(file, data);
-          fileByInstance.set(this.bindingKey(opened), { file, source: "binding" });
-          const loaded = await app.loadGraphData(data, true, true, opened);
-          if (!loaded || this.workflow?.instanceId !== opened.instanceId) {
-            throw new Error("ComfyUI 未能打开工作流。");
-          }
-        } else if (workflow.isTemporary) {
-          fileByInstance.set(key, { file, source: "binding" });
         } else {
-          await request("binding", {}, { workspace, file, native: workflow.path });
+          if (workflow.isTemporary) workspaceFiles.bind(workflow, workspace, file);
+          else await request("binding", {}, { workspace, file, native: workflow.path });
+          await this.refresh();
         }
-        await this.refresh();
-      }, open ? "在新标签页载入文件并自动比较。" : "指定当前标签页的比较对象，画布内容保持原样。");
+      }, open ? "已打开的工作流会切换到原标签页。" : "指定当前标签页的比较对象。");
+  }
+
+  async saveWorkspace() {
+    if (this.saving) return;
+    const workflow = this.workflow;
+    const workspace = this.config.workspace;
+    const current = () => this.visible && this.workflow === workflow && this.config.workspace === workspace;
+    this.saving = true;
+    this.render();
+    try {
+      await workspaceFiles.save(workflow, workspace);
+      if (current()) {
+        if (this.mode === "canvas" && !workflow.isModified) this.mode = "auto";
+        await this.refresh({ preserve: true });
+        if (current() && !this.status.classList.contains("cd-error")) this.message("已保存到仓库。");
+      }
+    } finally {
+      this.saving = false;
+      this.render();
+    }
   }
 
   async reloadDisk() {
     const workflow = this.workflow;
-    if (!this.selected || this.mode !== "disk") return;
+    if (!this.selected || this.comparisonMode !== "changed" || !this.sameWorkflow) return;
+    const workspace = this.config.workspace;
+    const association = this.association?.source;
     const context = this.currentContext();
     const workflowState = workflow?.activeState;
     const click = this.click;
-    if (workflow?.isModified) throw new Error("当前画布有未保存编辑，可切换到「对比当前画布」。");
-    const { content } = await request("file", { workspace: this.config.workspace, file: this.file });
+    if (workflow?.isModified) throw new Error("请先保存当前工作流，或比较未保存的编辑。");
+    const { content, version } = await request("file", { workspace, file: this.file });
     if (!this.current(context) || this.click !== click || workflow?.activeState !== workflowState) return;
-    if (workflow.isModified) throw new Error("当前画布有未保存编辑，可切换到「对比当前画布」。");
-    const data = parseWorkflow(content, "工作区");
+    if (workflow.isModified) throw new Error("请先保存当前工作流，或比较未保存的编辑。");
+    const data = parseWorkflow(content, "已保存文件");
     this.canvas.clear();
     const loaded = await app.loadGraphData(data, true, true, workflow);
     if (!loaded) throw new Error("ComfyUI 未能载入磁盘版本。");
-    await this.refresh();
+    if (["native", "workspace"].includes(association)) workflow.originalContent = content;
+    workspaceFiles.adoptDisk(workflow, workspace, version);
+    if (this.current(context)) await this.refresh();
   }
 
   renderScopes() {
@@ -1128,7 +1285,7 @@ class Sidebar {
     this.selected?.control.setAttribute("aria-pressed", "false");
     this.selected = row;
     row.control.setAttribute("aria-pressed", "true");
-    this.canvas.highlight(row.change, this.result);
+    if (this.sameWorkflow && !this.result.removed && app.rootGraphOrUndefined) this.canvas.highlight(row.change, this.result);
     const heading = element("div", "cd-inspector-heading");
     heading.append(element("strong", "", row.detail.node), element("span", "", row.detail.label));
     this.detailContent.replaceChildren(heading, this.renderDetails(row.change, this.result, row.detail));
@@ -1150,8 +1307,8 @@ class Sidebar {
     if (row.a !== undefined || row.b !== undefined) {
       const delta = element("dl", "cd-delta");
       for (const [label, value, color, source] of [
-        ["− HEAD", row.a, "old", change.from],
-        [this.mode === "disk" ? "+ 磁盘" : "+ 画布", row.b, "new", change.to],
+        ["− " + this.result.beforeLabel, row.a, "old", change.from],
+        ["+ " + this.result.afterLabel, row.b, "new", change.to],
       ]) {
         if (value === undefined) continue;
         const pair = element("div", `cd-${color}`);
@@ -1174,12 +1331,29 @@ class Sidebar {
   }
 
   locateReference(reference) {
-    return this.runLocation(() => this.canvas.locateNode(reference, this.result), false);
+    return this.runLocation(async () => {
+      if (!this.sameWorkflow || this.result.removed) return this.canvas.previewNode(reference, this.result);
+      try {
+        return await this.canvas.locateNode(reference, this.result);
+      } catch (error) {
+        if (this.comparisonMode !== "staged") throw error;
+        return this.canvas.previewNode(reference, this.result);
+      }
+    }, false);
   }
 
   locate(openOld = false) {
     if (!this.selected || !this.visible) return;
-    return this.runLocation(() => this.canvas.locate(this.selected.change, this.result, openOld), true);
+    return this.runLocation(async () => {
+      const { change } = this.selected;
+      if (!this.sameWorkflow || this.result.removed) return this.canvas.previewChange(change, this.result);
+      try {
+        return await this.canvas.locate(change, this.result, openOld);
+      } catch (error) {
+        if (this.comparisonMode !== "staged") throw error;
+        return this.canvas.previewChange(change, this.result);
+      }
+    }, true);
   }
 
   async runLocation(action, canRecover) {
@@ -1223,7 +1397,7 @@ app.registerExtension({
       id: TAB,
       icon: "pi pi-code",
       title: "工作流差异",
-      tooltip: "比较工作流与 Git 提交",
+      tooltip: "查看工作流差异和 Git 状态",
       type: "custom",
       render(container) {
         container.classList.add("comfydiff-mount");
@@ -1234,7 +1408,10 @@ app.registerExtension({
       },
       destroy() {
         sidebar?.reset();
-        if (sidebar) sidebar.wasVisible = false;
+        if (sidebar) {
+          sidebar.wasVisible = false;
+          sidebar.scmTab = null;
+        }
       },
     });
     setInterval(() => sidebar?.tick(), 300);

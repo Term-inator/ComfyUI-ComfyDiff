@@ -7,7 +7,7 @@ import tempfile
 from aiohttp import web
 
 from .directories import browse_directories
-from .repository import Repository, RepositoryError, resolve_workflow, workflow_path
+from .repository import Repository, RepositoryChanged, RepositoryError, fingerprint, resolve_workflow, workflow_path
 
 
 def read_settings(path):
@@ -47,6 +47,8 @@ def register_routes(server):
     async def handle(request):
         try:
             return web.json_response(await dispatch(request), headers={"Cache-Control": "no-store"})
+        except RepositoryChanged as error:
+            return web.json_response({"error": str(error)}, status=409)
         except RepositoryError as error:
             return web.json_response({"error": str(error)}, status=400)
         except (KeyError, TypeError, ValueError):
@@ -74,6 +76,22 @@ def register_routes(server):
                         raise RepositoryError("该标签页尚无可保存的工作流路径。")
                     workflow_path(native)
                     settings["bindings"].setdefault(root, {})[native] = relative
+                elif operation in ("stage", "unstage", "commit", "save"):
+                    root = configured(settings, body["workspace"])
+                    repo = await asyncio.to_thread(Repository, root)
+                    if operation in ("stage", "unstage"):
+                        return await asyncio.to_thread(repo.change_index, body["file"], operation == "stage")
+                    if operation == "commit":
+                        message = body["message"]
+                        if not isinstance(message, str) or not message.strip() or "\0" in message:
+                            raise RepositoryError("请输入提交说明。")
+                        return await asyncio.to_thread(repo.commit, message.strip(), body["expected"])
+                    content = body["content"]
+                    data = json.loads(content)
+                    if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
+                        raise RepositoryError("请选择有效的工作流。")
+                    version = await asyncio.to_thread(repo.save_workflow, body["file"], content.encode("utf-8"), body["expected"])
+                    return {"version": version}
                 else:
                     raise web.HTTPNotFound()
                 write_settings(path, settings)
@@ -97,16 +115,28 @@ def register_routes(server):
 
         root = configured(settings, query.get("workspace"))
         repo = await asyncio.to_thread(Repository, root)
+        if operation == "status":
+            return await asyncio.to_thread(repo.status)
         if operation == "files":
             return await asyncio.to_thread(repo.files)
         if operation == "file":
-            content = await asyncio.to_thread(repo.disk, query["file"])
-            return {"content": repo.decode(content, "工作区")}
+            relative = query["file"]
+            content = await asyncio.to_thread(repo.disk, relative)
+            native_root = users.get_request_user_filepath(request, None, create_dir=False)
+            native = None
+            for candidate in query.getall("open", []):
+                file, source = resolve_workflow(root, candidate, native_root, None)
+                if source == "native" and file == relative:
+                    native = candidate
+                    break
+            if native is None:
+                native = repo.native_path(relative, native_root)
+            return {"content": repo.decode(content, "已保存文件"), "version": fingerprint(content), "native": native}
         if operation == "compare":
             mode = query["mode"]
-            if mode not in ("disk", "canvas"):
+            if mode not in ("auto", "staged", "changed"):
                 raise RepositoryError("请选择比较来源。")
-            return await asyncio.to_thread(repo.compare, query["file"], mode == "disk", query.get("known"))
+            return await asyncio.to_thread(repo.compare, query["file"], mode, query.get("known"))
         raise web.HTTPNotFound()
 
     server.routes.get("/comfydiff/{operation}")(handle)

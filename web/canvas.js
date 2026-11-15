@@ -238,7 +238,7 @@ export class CanvasReview {
 
   async locateNode({ graph: key, node, historical, path }, result) {
     const { canvas, rootGraph: root } = this.app;
-    const { before, after, head } = result;
+    const { before, after, beforeLabel } = result;
     const oldPath = before.paths.get(key);
     const preferred = after.paths.get(key) ?? oldPath;
     const resolved = path ? resolvePath(root, path) : preferred && resolveGraph(root, canvas.graph, key, preferred);
@@ -260,7 +260,7 @@ export class CanvasReview {
         });
       }
       this.operation = undefined;
-      this.showReadonly(before, path ?? oldPath, { node: node.id }, head);
+      this.showReadonly(before, path ?? oldPath, { node: node.id }, beforeLabel, true);
       return "已定位到旧版本节点。";
     }
     throw new Error(`当前画布中找不到对应的节点 #${node.id}。`);
@@ -270,8 +270,26 @@ export class CanvasReview {
     center(canvas, [card.offsetLeft, card.offsetTop, card.offsetWidth, card.offsetHeight], this.sidebar);
   }
 
-  showReadonly(before, path, focus, head) {
-    if (!this.dialog?.open) this.dialog = openReadonly(before, path, focus, head);
+  showReadonly(snapshot, path, focus, label, historical) {
+    if (!this.dialog?.open) this.dialog = openReadonly(snapshot, path, focus, label, historical);
+  }
+
+  previewNode({ graph, node, path, historical }, result) {
+    const snapshot = historical ? result.before : result.after;
+    const targetPath = path ?? snapshot.paths.get(graph);
+    if (!targetPath) throw new Error("该版本中找不到节点所在的子图。");
+    this.showReadonly(snapshot, targetPath, { node: node.id }, historical ? result.beforeLabel : result.afterLabel, historical);
+    return "";
+  }
+
+  previewChange(change, result) {
+    const historical = change.kind === "deleted" || !result.after.paths.has(change.graph);
+    const snapshot = historical ? result.before : result.after;
+    const path = snapshot.paths.get(change.graph);
+    if (!path) throw new Error("该版本中找不到对应的子图。");
+    const edge = historical ? change.from?.edge : change.to?.edge;
+    this.showReadonly(snapshot, path, { node: change.node, edge }, historical ? result.beforeLabel : result.afterLabel, historical);
+    return "";
   }
 
   clear() {
@@ -389,7 +407,7 @@ export class CanvasReview {
   renderHighlight(plan) {
     const { app } = this;
     const { canvas } = app;
-    const { change, result: { before, head }, resolved: { graph }, root, workflowState, graphKey,
+    const { change, result: { before, beforeLabel }, resolved: { graph }, root, workflowState, graphKey,
       currentGraph, ghost, removedBranch, removedEdges, source, focus, historicalNodes } = plan;
     const node = currentGraph?.nodes.get(change.node);
     const ghosts = historicalNodes.size ? createGhostLayer(canvas) : null;
@@ -401,7 +419,7 @@ export class CanvasReview {
       }]);
       const card = ghosts.add(old, before, {
         selected: old === ghost,
-        openSubgraph: branch && (() => this.showReadonly(before, branch, old === ghost ? focus : undefined, head)),
+        openSubgraph: branch && (() => this.showReadonly(before, branch, old === ghost ? focus : undefined, beforeLabel, true)),
         locate: (card) => this.focusGhost(canvas, card),
         redraw: () => canvas.setDirty(true, true),
       });
@@ -533,7 +551,7 @@ export class CanvasReview {
         // Vue updates the widget DOM after the canvas transform changes.
         void nextPaint().then(() => canvas.setDirty(true, true));
       }
-      if (openOld && removedBranch) this.showReadonly(result.before, removedBranch, focus, result.head);
+      if (openOld && removedBranch) this.showReadonly(result.before, removedBranch, focus, result.beforeLabel, true);
       const host = isParameter && target && nodeElement(canvas, node.id);
       if (change.kind === "parameter" && !isParameter) return "已定位到节点，当前版本没有这个参数。";
       if (isParameter && (!change.name || !widgetElement(host, change.name))) {

@@ -65,18 +65,18 @@ export function nodeIdButton(id, locate, className = "") {
   return button;
 }
 
-export function openReadonly(snapshot, path, focus, head) {
+export function openReadonly(snapshot, path, focus, label, historical) {
   const dialog = element("dialog", "comfydiff-readonly");
   const toolbar = element("header", "cd-readonly-header");
-  const title = element("strong", "", `HEAD ${head.slice(0, 7)} · 旧工作流 · 只读`);
+  const title = element("strong", "", label + " · 只读");
   const close = element("button", "", "返回画布");
   close.type = "button";
   close.onclick = () => dialog.close();
   toolbar.append(title, close);
   const crumbs = element("nav", "cd-crumbs");
-  crumbs.setAttribute("aria-label", "旧子图路径");
+  crumbs.setAttribute("aria-label", "工作流路径");
   const viewport = element("div", "cd-readonly-viewport");
-  viewport.setAttribute("aria-label", "只读子图画布");
+  viewport.setAttribute("aria-label", "只读工作流画布");
   const canvas = element("canvas");
   const layer = element("div", "cd-readonly-nodes");
   viewport.append(canvas, layer);
@@ -100,7 +100,7 @@ export function openReadonly(snapshot, path, focus, head) {
     const context = canvas.getContext("2d");
     context.setTransform(ratio * scale, 0, 0, ratio * scale, ratio * offset[0], ratio * offset[1]);
     const style = getComputedStyle(dialog);
-    const red = style.getPropertyValue("--cd-mark-deleted").trim();
+    const mark = style.getPropertyValue(historical ? "--cd-mark-deleted" : "--cd-mark-added").trim();
     const contrast = style.getPropertyValue("--cd-mark-contrast").trim();
     const muted = style.getPropertyValue("--cd-muted").trim();
     const markedPaths = [];
@@ -117,8 +117,8 @@ export function openReadonly(snapshot, path, focus, head) {
       }
     }
     context.lineCap = "round";
-    context.setLineDash([13 / scale, 10 / scale]);
-    for (const path of markedPaths) strokeMark(context, path, red, contrast, 4 / scale, scale);
+    context.setLineDash(historical ? [13 / scale, 10 / scale] : []);
+    for (const path of markedPaths) strokeMark(context, path, mark, contrast, 4 / scale, scale);
     layer.style.setProperty("--cd-mark-unit", `${1 / scale}px`);
     layer.style.transform = `translate(${offset[0]}px, ${offset[1]}px) scale(${scale})`;
   }

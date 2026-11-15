@@ -1,4 +1,5 @@
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -6,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from repository import Repository, RepositoryError, resolve_workflow, workflow_path
+from repository import Repository, RepositoryChanged, RepositoryError, fingerprint, resolve_workflow, workflow_path
 
 
 class WorktreeReadTests(unittest.TestCase):
@@ -108,6 +109,85 @@ class ResolveWorkflowTests(unittest.TestCase):
         )
         with self.assertRaises(RepositoryError):
             resolve_workflow(self.repo, "workflows/../outside.json", None, None)
+
+
+class SourceControlTests(unittest.TestCase):
+    name = "portraits/测试 [1].json"
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True, capture_output=True)
+        self.repo = Repository(str(self.root))
+        for key, value in (
+            ("user.name", "ComfyDiff test"),
+            ("user.email", "test@example.invalid"),
+            ("commit.gpgSign", "false"),
+            ("core.hooksPath", os.devnull),
+        ):
+            self.repo.checked_git("config", "config", key, value)
+        (self.root / self.name).parent.mkdir()
+
+    def write(self, steps):
+        content = json.dumps({"nodes": [], "steps": steps}).encode()
+        (self.root / self.name).write_bytes(content)
+        return content
+
+    def commit(self, message):
+        return self.repo.commit(message, self.repo.status()["commitToken"])
+
+    def test_compare_and_commit_keep_disk_and_index_versions_separate(self):
+        self.write(20)
+        self.repo.change_index(self.name, True)
+        self.commit("Initial")
+        self.write(28)
+        self.repo.change_index(self.name, True)
+        self.assertEqual(self.repo.compare(self.name, "auto")["mode"], "staged")
+        self.write(30)
+        (self.root / "README.md").write_text("about the workflow", encoding="utf-8")
+        self.repo.change_index("README.md", True)
+        status = self.repo.status()
+        self.assertEqual({row["file"] for row in status["staged"]}, {"README.md", self.name})
+        self.assertEqual(status["changed"], [{"file": self.name, "code": "M"}])
+        for mode, old, new in (("staged", 20, 28), ("changed", 28, 30)):
+            data = self.repo.compare(self.name, mode)
+            self.assertEqual((json.loads(data["before"])["steps"], json.loads(data["after"])["steps"]), (old, new))
+            self.assertEqual(self.repo.compare(self.name, mode, data["token"]), {"unchanged": True})
+        self.commit("Update workflow and documentation")
+        head = self.repo.checked_git("read", "show", "HEAD:" + self.name)
+        self.assertEqual(json.loads(head)["steps"], 28)
+        self.assertEqual(json.loads(self.repo.disk(self.name))["steps"], 30)
+
+    def test_commit_rejects_new_staged_contents_at_the_same_path(self):
+        self.write(20)
+        initial = self.repo.change_index(self.name, True)
+        self.write(30)
+        self.repo.change_index(self.name, True)
+        with self.assertRaises(RepositoryChanged):
+            self.repo.commit("Outdated preview", initial["commitToken"])
+        self.assertIsNone(self.repo.status()["head"])
+        self.repo.change_index(self.name, False)
+        self.assertEqual(self.repo.status()["changed"], [{"file": self.name, "code": "U"}])
+        self.assertEqual(json.loads(self.repo.disk(self.name))["steps"], 30)
+
+    def test_staged_and_unstaged_deletion_produce_a_missing_right_side(self):
+        self.write(20)
+        self.repo.change_index(self.name, True)
+        self.commit("Initial")
+        (self.root / self.name).unlink()
+        self.assertIsNone(self.repo.compare(self.name, "changed")["after"])
+        self.repo.change_index(self.name, True)
+        data = self.repo.compare(self.name, "auto")
+        self.assertEqual(data["mode"], "staged")
+        self.assertIsNone(data["after"])
+
+    def test_save_rejects_external_file_changes_without_replacing_them(self):
+        original = self.write(20)
+        external = self.write(28)
+        with self.assertRaises(RepositoryChanged):
+            self.repo.save_workflow(self.name, original, fingerprint(original))
+        self.assertEqual(self.repo.disk(self.name), external)
+        self.assertEqual(self.repo.save_workflow(self.name, original, fingerprint(external)), fingerprint(original))
+        self.assertEqual(self.repo.disk(self.name), original)
 
 
 if __name__ == "__main__":

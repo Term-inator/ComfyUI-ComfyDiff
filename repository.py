@@ -2,31 +2,45 @@ from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import secrets
 import stat
 import subprocess
+import tempfile
 
 
 class RepositoryError(Exception):
     pass
 
 
+class RepositoryChanged(RepositoryError):
+    pass
+
+
 WORKTREE_FILE_ERROR = "工作区文件必须是仓库内的普通 JSON 文件。"
 
 
-def workflow_path(value):
+def repository_path(value):
     if not isinstance(value, str) or not value or "\\" in value or "\0" in value:
-        raise RepositoryError("请选择仓库内的工作流路径。")
+        raise RepositoryError("请选择仓库内的文件路径。")
     path = PurePosixPath(value)
-    if path.is_absolute() or PureWindowsPath(value).drive or path.as_posix() != value or any(
+    if not path.parts or path.is_absolute() or PureWindowsPath(value).drive or path.as_posix() != value or any(
         part == ".." or part.casefold() == ".git" for part in path.parts
-    ) or path.suffix.lower() != ".json":
-        raise RepositoryError("请选择仓库内的 JSON 工作流。")
+    ):
+        raise RepositoryError("请选择仓库内的文件路径。")
     if os.name == "nt" and any(":" in part or part.endswith((" ", ".")) for part in path.parts):
+        raise RepositoryError("请选择仓库内的文件路径。")
+    return path
+
+
+def workflow_path(value):
+    path = repository_path(value)
+    if path.suffix.lower() != ".json":
         raise RepositoryError("请选择仓库内的 JSON 工作流。")
     return path
 
 
-def _open_posix_file(root, relative):
+@contextmanager
+def _posix_parent(root, relative):
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     parent = os.open(root.anchor, flags)
     try:
@@ -34,9 +48,14 @@ def _open_posix_file(root, relative):
             child = os.open(name, flags, dir_fd=parent)
             os.close(parent)
             parent = child
-        return os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        yield parent
     finally:
         os.close(parent)
+
+
+def _open_posix_file(root, relative):
+    with _posix_parent(root, relative) as parent:
+        return os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
 
 
 def _open_windows_file(root, relative):
@@ -115,6 +134,62 @@ def absolute_workspace(directory):
     return Path(directory)
 
 
+def fingerprint(content):
+    return hashlib.sha256(content).hexdigest()
+
+
+def check_write_version(descriptor, expected):
+    with open(descriptor, "rb", closefd=False) as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise RepositoryError(WORKTREE_FILE_ERROR)
+        if fingerprint(stream.read()) != expected:
+            raise RepositoryChanged("仓库文件已被更新。请先确认磁盘改动，再保存当前画布。")
+    return stat.S_IMODE(info.st_mode)
+
+
+def replace_worktree_file(root, relative, content, expected):
+    if os.name == "nt":
+        target = root.joinpath(*relative.parts)
+        if target.parent.resolve() != target.parent:
+            raise RepositoryError(WORKTREE_FILE_ERROR)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(content)
+            descriptor = _open_windows_file(root, relative)
+            try:
+                mode = check_write_version(descriptor, expected)
+            finally:
+                os.close(descriptor)
+            os.chmod(temporary, mode)
+            os.replace(temporary, target)
+        finally:
+            if temporary:
+                temporary.unlink(missing_ok=True)
+        return
+
+    with _posix_parent(root, relative) as parent:
+        temporary = ".comfydiff-" + secrets.token_hex(12) + ".tmp"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+        try:
+            with open(descriptor, "wb") as stream:
+                stream.write(content)
+                current = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                try:
+                    mode = check_write_version(current, expected)
+                finally:
+                    os.close(current)
+                os.fchmod(stream.fileno(), mode)
+            os.replace(temporary, relative.name, src_dir_fd=parent, dst_dir_fd=parent)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+
+
 class Repository:
     @classmethod
     def select(cls, directory):
@@ -131,14 +206,21 @@ class Repository:
     def git(self, *args):
         # Ignore inherited repository overrides and disable lazy remote reads.
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        env["GIT_NO_LAZY_FETCH"] = "1"
+        env.update(GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
         try:
             return subprocess.run(
-                ["git", "--no-replace-objects", "-C", str(self.root), *args],
-                env=env, capture_output=True, timeout=10, check=False,
+                ["git", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", str(self.root), *args],
+                env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=15, check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
-            raise RepositoryError("无法运行 Git 或 Git 读取超时。") from error
+            raise RepositoryError("无法运行 Git 或 Git 操作超时。请刷新仓库状态。") from error
+
+    def checked_git(self, message, *args):
+        result = self.git(*args)
+        if result.returncode:
+            detail = result.stderr.decode(errors="replace").strip()[:800]
+            raise RepositoryError(f"{message}\n{detail}" if detail else message)
+        return result.stdout
 
     def files(self):
         files = []
@@ -154,43 +236,145 @@ class Repository:
         return sorted(files)
 
     def disk(self, relative):
+        content = self.worktree_content(relative)
+        if content is None:
+            raise RepositoryError("工作区中找不到该文件，可能已移动或删除。")
+        return content
+
+    def worktree_content(self, relative):
         try:
             with open_worktree_file(self.root, relative) as stream:
                 return stream.read()
-        except FileNotFoundError as error:
-            raise RepositoryError("工作区中找不到该文件，可能已移动或删除。") from error
+        except FileNotFoundError:
+            return None
         except OSError as error:
             raise RepositoryError("无法读取工作区文件。") from error
 
-    def compare(self, relative, disk, known=None):
+    def native_path(self, relative, native_root):
+        candidate = self.root.joinpath(*workflow_path(relative).parts)
+        native_workflows = (Path(native_root) / "workflows").resolve()
+        if candidate.is_relative_to(native_workflows):
+            return "workflows/" + candidate.relative_to(native_workflows).as_posix()
+
+    def save_workflow(self, relative, content, expected):
+        path = workflow_path(relative)
+        try:
+            replace_worktree_file(self.root, path, content, expected)
+        except FileNotFoundError as error:
+            raise RepositoryChanged("仓库文件已移动或删除。请重新打开文件。") from error
+        except OSError as error:
+            raise RepositoryError("无法保存工作区文件。") from error
+        return fingerprint(content)
+
+    def index_entry(self, relative):
+        listing = self.checked_git("无法读取暂存版本。", "--literal-pathspecs", "ls-files", "--stage", "-z", "--", relative)
+        for record in listing.split(b"\0"):
+            metadata, _, name = record.partition(b"\t")
+            if name == os.fsencode(relative):
+                mode, oid, stage = metadata.split()
+                if stage != b"0":
+                    raise RepositoryError("该文件有合并冲突，请先在 Git 中解决。")
+                return mode, oid
+
+    def head_entry(self, head, relative):
+        if head is None:
+            return None
+        listing = self.checked_git("无法读取上次提交的文件记录。", "--literal-pathspecs", "ls-tree", "-z", head, "--", relative)
+        if listing:
+            mode, _, oid = listing.split(b"\t", 1)[0].split()
+            return mode, oid
+
+    def workflow_blob(self, entry, label):
+        if entry is None:
+            return None
+        mode, oid = entry
+        if mode not in (b"100644", b"100755"):
+            raise RepositoryError(f"{label}的工作流必须是普通 JSON 文件。")
+        return self.checked_git(f"无法读取{label}的工作流。", "cat-file", "blob", oid.decode("ascii"))
+
+    def compare(self, relative, mode, known=None):
         workflow_path(relative)
-        commit = self.git("rev-parse", "--verify", "HEAD^{commit}")
-        if commit.returncode:
-            raise RepositoryError("无法读取 HEAD，Git 工作区可能尚无提交。")
-        head = commit.stdout.decode("ascii").strip()
-        current = self.disk(relative) if disk else None
-        fingerprint = hashlib.sha256(current).hexdigest() if disk else ""
-        token = f"{head}:{fingerprint}"
+        commit = self.git("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+        head = commit.stdout.decode("ascii").strip() or None
+        previous = self.head_entry(head, relative)
+        index = self.index_entry(relative)
+        staged = index != previous
+        disk = self.worktree_content(relative) if mode != "staged" else None
+        disk_hash = fingerprint(disk) if disk is not None else None
+        indexed = None
+        if mode == "auto":
+            if staged:
+                indexed = self.workflow_blob(index, "暂存版本")
+            mode = "staged" if staged and disk == indexed else "changed"
+        token = fingerprint(repr((mode, head, previous, index, disk_hash)).encode("ascii"))
         if known == token:
             return {"unchanged": True}
 
-        entry = self.git("--literal-pathspecs", "ls-tree", "-z", head, "--", relative)
-        if entry.returncode:
-            raise RepositoryError("无法读取 HEAD 的文件记录。")
-        previous = None
-        if entry.stdout:
-            mode, kind, oid = entry.stdout.split(b"\t", 1)[0].split()
-            if kind != b"blob" or mode not in (b"100644", b"100755"):
-                raise RepositoryError("HEAD 中的工作流必须是普通 JSON 文件。")
-            blob = self.git("cat-file", "blob", oid.decode("ascii"))
-            if blob.returncode:
-                raise RepositoryError("无法读取 HEAD 中的工作流。")
-            previous = blob.stdout
+        if indexed is None:
+            indexed = self.workflow_blob(index, "暂存版本")
+        committed = self.workflow_blob(previous, "上次提交") if mode == "staged" else None
         return {
-            "head": head, "token": token,
-            "before": self.decode(previous, "HEAD"),
-            "after": self.decode(current, "工作区"),
+            "head": head, "token": token, "mode": mode, "staged": staged,
+            "before": self.decode(committed, "上次提交") if mode == "staged" else self.decode(indexed, "暂存版本"),
+            "after": self.decode(indexed, "暂存版本") if mode == "staged" else self.decode(disk, "已保存文件"),
         }
+
+    def status(self):
+        raw = self.checked_git(
+            "无法读取 Git 状态。", "--no-optional-locks", "status", "--porcelain=v2", "-z", "--branch",
+            "--no-ahead-behind", "--no-renames", "--untracked-files=all", "--ignore-submodules=dirty",
+        )
+        result = {"head": None, "branch": None, "staged": [], "changed": [], "blocked": ""}
+        staged_entries = []
+        for record in raw.split(b"\0"):
+            if record.startswith(b"# branch.oid "):
+                oid = record.removeprefix(b"# branch.oid ")
+                result["head"] = None if oid == b"(initial)" else oid.decode("ascii")
+            elif record.startswith(b"# branch.head "):
+                result["branch"] = os.fsdecode(record.removeprefix(b"# branch.head "))
+            elif record.startswith(b"1 "):
+                _, xy, _, _, mode, _, _, oid, path = record.split(b" ", 8)
+                file = os.fsdecode(path)
+                if xy[:1] != b".":
+                    result["staged"].append({"file": file, "code": chr(xy[0])})
+                    staged_entries.append((path, mode, oid, xy[:1]))
+                if xy[1:] != b".":
+                    result["changed"].append({"file": file, "code": chr(xy[1])})
+            elif record.startswith(b"? "):
+                result["changed"].append({"file": os.fsdecode(record[2:]), "code": "U"})
+            elif record.startswith(b"u "):
+                file = os.fsdecode(record.split(b" ", 10)[-1])
+                result["changed"].append({"file": file, "code": "!"})
+                result["blocked"] = "仓库中有未解决的冲突。请先在 Git 中解决。"
+        git_dir = Path(os.fsdecode(self.checked_git("无法读取 Git 目录。", "rev-parse", "--absolute-git-dir")).rstrip("\n"))
+        if any((git_dir / name).exists() for name in (
+            "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer",
+        )):
+            result["blocked"] = "仓库中还有未完成的 Git 操作。请先在 Git 中处理。"
+        result["commitToken"] = fingerprint(repr((result["branch"], result["head"], sorted(staged_entries))).encode("ascii", "backslashreplace"))
+        return result
+
+    def change_index(self, relative, stage):
+        repository_path(relative)
+        state = self.status()
+        if state["blocked"]:
+            raise RepositoryError(state["blocked"])
+        if relative not in {row["file"] for row in state["changed" if stage else "staged"]}:
+            raise RepositoryChanged("该文件的 Git 状态已更新。请刷新后重试。")
+        args = ("add",) if stage else ("reset", "-q")
+        self.checked_git("无法更新暂存区。", "--literal-pathspecs", *args, "--", relative)
+        return self.status()
+
+    def commit(self, message, expected):
+        state = self.status()
+        if state["blocked"]:
+            raise RepositoryError(state["blocked"])
+        if state["commitToken"] != expected:
+            raise RepositoryChanged("分支或暂存内容已更新，请检查后重新提交。")
+        if not state["staged"]:
+            raise RepositoryError("请先暂存要提交的文件。")
+        self.checked_git("提交失败。", "commit", "-m", message)
+        return self.status()
 
     @staticmethod
     def decode(content, source):

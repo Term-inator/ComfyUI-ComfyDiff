@@ -147,13 +147,18 @@ function preview(value) {
   return first.length <= 54 && first === text ? first : `${first.slice(0, 54)}…`;
 }
 
-function description(change, result) {
-  const { kind, from, to, before, after } = change;
+function changeNodeName(change, result) {
+  const { before, after } = change;
   const target = after ?? before;
   const { graphs } = after ? result.after : result.before;
-  const node = target.title || graphs.get(target.type)?.name || target.type;
+  return target.title || graphs.get(target.type)?.name || target.type;
+}
+
+function description(change, result) {
+  const { kind, from, to, before, after } = change;
+  const node = changeNodeName(change, result);
   if (kind === "added") {
-    const summary = `${target.inputs.length} 个输入 · ${target.outputs.length} 个输出`;
+    const summary = `${after.inputs.length} 个输入 · ${after.outputs.length} 个输出`;
     return { label: "新增节点", color: "green", node, summary };
   }
   if (kind === "deleted") return { label: "删除节点", color: "red", node };
@@ -161,10 +166,12 @@ function description(change, result) {
   if (kind === "mode") return { label: "运行模式", node, a: modeNames.get(from) ?? from, b: modeNames.get(to) ?? to };
   if (kind === "boundary") {
     const port = to ?? from;
+    const field = port.label || port.name;
     return {
       label: !from ? "新增端口" : !to ? "移除端口" : "端口变更",
       color: !from ? "green" : !to ? "red" : undefined,
-      node: `${node} · ${port.label || port.name}`,
+      node: `${node} · ${field}`,
+      field,
       a: from ? `${from.label || from.name} · ${display(from.type)}` : "无",
       b: to ? `${to.label || to.name} · ${display(to.type)}` : "无",
     };
@@ -178,9 +185,10 @@ function description(change, result) {
     else label = "端口来源";
   }
   const missing = kind === "parameter" ? "无" : "未连接";
-  const summary = from?.kind === "link" && to?.kind === "link"
-    ? `#${from.edge.source.id} → #${to.edge.source.id}` : undefined;
-  return { label, node: `${node} · ${change.field}`, a: sourceText(from, missing), b: sourceText(to, missing), summary };
+  return {
+    label, node: `${node} · ${change.field}`, field: change.field,
+    a: sourceText(from, missing), b: sourceText(to, missing),
+  };
 }
 
 function changeKey(change) {
@@ -221,6 +229,7 @@ class Sidebar {
     this.category = "all";
     this.scope = ALL_GRAPHS;
     this.rows = [];
+    this.expandedNodes = new Set();
     this.issues = [];
     this.issueGroupOpen = new Map();
     this.issueItemOpen = new Set();
@@ -577,6 +586,7 @@ class Sidebar {
         this.scope = ALL_GRAPHS;
         if (this.category !== ISSUES) this.category = "all";
         this.search.value = "";
+        this.expandedNodes.clear();
         this.list.scrollTop = 0;
         this.filterContext = filterContext;
       }
@@ -762,7 +772,6 @@ class Sidebar {
     const selectedChange = this.selected?.change;
     this.updateResultsBusy();
     const scroll = resetScroll ? 0 : this.list.scrollTop;
-    const groups = new Map();
     this.providerLabels = [];
     const showingIssues = this.category === ISSUES;
     this.search.hidden = this.scopePicker.hidden = showingIssues;
@@ -796,20 +805,14 @@ class Sidebar {
       return;
     }
     panel.removeAttribute("tabindex");
-    for (const change of entries) {
-      if (!groups.has(change.graph)) groups.set(change.graph, []);
-      groups.get(change.graph).push(change);
-    }
-    for (const [graph, changes] of groups) {
+    for (const [graph, changes] of Map.groupBy(entries, (change) => change.graph)) {
       const group = element("section", "cd-group");
       const path = result.after.paths.get(graph) ?? result.before.paths.get(graph) ?? [];
       const heading = element("h3", "", pathLabel(path));
       heading.append(element("span", "", `${changes.length} 处`));
       group.append(heading);
-      for (const change of changes) {
-        const row = this.renderChange(change, result);
-        this.rows.push(row);
-        group.append(row.container);
+      for (const nodeChanges of Map.groupBy(changes, (change) => change.node).values()) {
+        group.append(this.renderNodeChanges(nodeChanges, result, terms.length > 0));
       }
       panel.append(group);
     }
@@ -958,29 +961,87 @@ class Sidebar {
     }
   }
 
-  renderChange(change, result) {
+  providerLabel(node) {
+    const label = element("span", "cd-node-provider");
+    this.providerLabels.push({ node, label });
+    return label;
+  }
+
+  renderNodeChanges(changes, result, searching) {
+    const first = changes[0];
+    if (changes.length === 1) {
+      const row = this.renderChange(first, result);
+      this.rows.push(row);
+      return row.container;
+    }
+    const node = first.after ?? first.before;
+    const group = element("details", "cd-node-changes");
+    const header = element("summary", "cd-node-changes-heading");
+    const title = element("div", "cd-row-copy");
+    const name = element("span", "cd-node-changes-title");
+    const nodeName = changeNodeName(first, result);
+    name.title = nodeName;
+    name.append(element("strong", "", nodeName));
+    if (!node.raw.boundary) name.append(" ", element("code", "cd-node-id", `#${first.node}`));
+    title.append(name, this.providerLabel(node));
+    const count = element("span", "cd-node-changes-count", `${changes.length} 处`);
+    count.title = `${changes.length} 处改动`;
+    header.append(icon("chevron-right"), title, count);
+    const children = element("div", "cd-node-change-children");
+    group.append(header, children);
+    for (const change of changes) {
+      const row = this.renderChange(change, result, group);
+      this.rows.push(row);
+      children.append(row.container);
+    }
+    const key = JSON.stringify([first.graph, first.node]);
+    group.open = searching || this.expandedNodes.has(key) || changes.includes(this.selected?.change);
+    let open = group.open;
+    group.ontoggle = () => {
+      if (!group.isConnected || open === group.open) return;
+      open = group.open;
+      if (!searching) {
+        if (open) this.expandedNodes.add(key);
+        else this.expandedNodes.delete(key);
+      }
+      if (!open && this.selected?.group === group) this.clearSelection();
+    };
+    return group;
+  }
+
+  renderChange(change, result, group) {
     const detail = description(change, result);
-    const container = element("div", "cd-entry");
+    const container = element("div", group ? "cd-entry cd-node-change" : "cd-entry");
     const control = button("", () => this.selectRow(row), "cd-change");
     const label = change.kind === "deleted" ? "在画布查看删除" : "定位到画布";
     const locator = this.rowLocator(label, () => {
       if (this.selected !== row) this.selectRow(row);
       void this.locate();
     });
-    const row = { change, detail, control, container, locator };
+    const row = { change, detail, control, container, locator, group };
     control.setAttribute("aria-pressed", "false");
     const symbol = element("span", `cd-change-symbol cd-${detail.color ?? "yellow"}`,
       detail.color === "green" ? "+" : detail.color === "red" ? "−" : "↔");
     symbol.setAttribute("aria-hidden", "true");
-    const copy = element("span", "cd-row-copy");
-    const isNode = !(change.after ?? change.before).raw.boundary;
-    const summary = detail.summary ?? (detail.a !== undefined && detail.b !== undefined
-      ? `${preview(detail.a)} → ${preview(detail.b)}` : detail.label);
-    copy.append(element("strong", "", detail.node), element("span", "cd-kind", summary));
-    const provider = element("span", "cd-node-provider");
-    this.providerLabels.push({ node: change.after ?? change.before, label: provider });
-    copy.append(provider);
-    control.append(symbol, copy, element("span", "cd-node-id", isNode ? `#${change.node}` : detail.label));
+    const { from, to } = change;
+    const values = from?.kind === "link" && to?.kind === "link"
+      ? [`#${from.edge.source.id}`, `#${to.edge.source.id}`] : [detail.a, detail.b];
+    const hasDelta = values.every((value) => value !== undefined);
+    if (group) {
+      const field = element("strong", "cd-node-change-field", detail.field ?? detail.label);
+      field.title = detail.field ? `${detail.field} · ${detail.label}` : detail.label;
+      const delta = element("span", "cd-node-change-delta");
+      if (hasDelta) delta.append(element("span", "cd-old", preview(values[0])),
+        element("span", "cd-node-change-arrow", "→"), element("span", "cd-new", preview(values[1])));
+      delta.title = hasDelta ? values.map(String).join(" → ") : detail.label;
+      control.append(symbol, field, delta);
+    } else {
+      const copy = element("span", "cd-row-copy");
+      const node = change.after ?? change.before;
+      const summary = detail.summary ?? (hasDelta ? values.map(preview).join(" → ") : detail.label);
+      copy.append(element("strong", "", detail.node), element("span", "cd-kind", summary), this.providerLabel(node));
+      control.append(symbol, copy, element("span", "cd-node-id", node.raw.boundary ? detail.label : `#${change.node}`));
+    }
     container.append(control, locator);
     return row;
   }
@@ -997,6 +1058,7 @@ class Sidebar {
       return;
     }
     this.clearLocation();
+    if (row.group) row.group.open = true;
     this.selected?.control.setAttribute("aria-pressed", "false");
     this.selected = row;
     row.control.setAttribute("aria-pressed", "true");

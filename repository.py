@@ -50,7 +50,7 @@ def resolve_workflow(root, native, native_root, binding):
 class Repository:
     def __init__(self, directory):
         if not isinstance(directory, str) or not Path(directory).is_absolute():
-            raise RepositoryError("请输入 ComfyUI 服务器上的绝对路径。")
+            raise RepositoryError("请选择 ComfyUI 服务器上的工作区目录。")
         self.root = Path(directory).resolve()
         if not self.root.is_dir():
             raise RepositoryError("Git 工作区目录不存在。")

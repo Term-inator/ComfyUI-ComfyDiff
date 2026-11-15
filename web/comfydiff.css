@@ -615,7 +615,7 @@
 .comfydiff-form { box-sizing: border-box; width: min(460px, 90vw); }
 .comfydiff-form form, .comfydiff-form label { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .comfydiff-form form { margin-top: 10px; }
-.comfydiff-form input, .comfydiff-form select {
+.comfydiff-form select {
   box-sizing: border-box;
   min-width: 0;
   width: 100%;
@@ -629,6 +629,33 @@
 .comfydiff-form .cd-form-help { margin: 0; color: var(--cd-muted); font-size: 0.9em; }
 .comfydiff-form .cd-actions { justify-content: flex-end; }
 .comfydiff-form::backdrop, .comfydiff-readonly::backdrop { background: rgb(0 0 0 / 45%); }
+.cd-workspace-picker[open] { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.cd-directory-toolbar { display: flex; align-items: center; gap: 8px; }
+.cd-directory-toolbar button { flex: none; }
+.cd-directory-path { min-width: 0; overflow-wrap: anywhere; }
+.cd-directories {
+  max-block-size: min(40vh, 18rem);
+  overflow: auto;
+  padding: 3px;
+  margin: 0;
+  border: 1px solid var(--cd-border);
+  border-radius: 5px;
+  list-style: none;
+}
+.cd-directories:empty, .cd-workspace-picker .cd-directory-status:empty { display: none; }
+.cd-directories button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+.cd-directories button:is(:hover, :focus-visible) {
+  background: color-mix(in srgb, var(--cd-text) 10%, var(--cd-surface));
+}
+.cd-workspace-picker .cd-error { margin: 0; }
 .comfydiff-readonly { width: min(1100px, 92vw); }
 .cd-crumbs { padding: 8px 0; }
 .cd-readonly-viewport {

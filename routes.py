@@ -6,6 +6,7 @@ import tempfile
 
 from aiohttp import web
 
+from .directories import browse_directories
 from .repository import Repository, RepositoryError, resolve_workflow, workflow_path
 
 
@@ -80,6 +81,8 @@ def register_routes(server):
 
         settings = read_settings(path)
         query = request.query
+        if operation == "directories":
+            return await asyncio.to_thread(browse_directories, query.get("path"), settings["workspace"])
         if operation == "settings":
             root = settings["workspace"]
             native = query.get("native")

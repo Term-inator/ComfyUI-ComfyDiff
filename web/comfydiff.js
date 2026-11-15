@@ -6,6 +6,7 @@ import { element, nodeIdButton } from "./graph-view.js";
 import { collectIssues } from "./issues.js";
 import { NodeIdentity } from "./node-identity.js";
 import { createSidebarSplit } from "./sidebar-split.js";
+import { openWorkspacePicker } from "./workspace-picker.js";
 
 const TAB = "comfydiff";
 const fileByInstance = new Map();
@@ -570,7 +571,7 @@ class Sidebar {
       this.configTab = this.tabKey;
       this.render();
       if (!config.workspace) {
-        this.message("请在设置中填写 Git 工作区目录。");
+        this.message("请在设置中选择 Git 工作区目录。");
         return;
       }
       if (!workflow || !root) {
@@ -657,12 +658,8 @@ class Sidebar {
   }
 
   settings() {
-    const input = element("input");
-    input.required = true;
-    input.value = this.config.workspace || "";
-    input.placeholder = "/srv/ComfyUI/my_workflows";
-    formDialog("工作流差异设置", "Git 工作区绝对路径", input, "保存", async (workspace) => {
-      await request("settings", {}, { workspace: workspace.trim() });
+    openWorkspacePicker((path) => request("directories", { path }), async (workspace) => {
+      await request("settings", {}, { workspace });
       await this.refresh();
     });
   }

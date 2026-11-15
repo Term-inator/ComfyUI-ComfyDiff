@@ -1,5 +1,7 @@
 # ComfyDiff
 
+**Workflow diffs and Git source control for ComfyUI**
+
 [简体中文](README.zh-CN.md) · English
 
 ComfyDiff is a Git sidebar for ComfyUI workflows. Review changes to nodes, parameters, links, and subgraphs next to the canvas. Jump from a change to its location, then stage and commit the files you've reviewed.

@@ -1,5 +1,7 @@
 # ComfyDiff
 
+**ComfyUI 工作流差异与 Git 源代码管理**
+
 简体中文 · [English](README.md)
 
 ComfyDiff 是 ComfyUI 的工作流 Git 侧栏。在画布旁查看节点、参数、接线和子图的改动，点击差异定位到对应位置，再把确认过的文件暂存并提交。
